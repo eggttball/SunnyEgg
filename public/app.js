@@ -96,6 +96,16 @@ function newestFirst(posts) {
     .map(entry => entry.post);
 }
 
+function sourcePhotoId(post, asset) {
+  const current = asset?.sourcePhotoId;
+  if (typeof current === "string" && /^\d+$/.test(current)) return current;
+  const assets = Array.isArray(post?.assets) ? post.assets : [];
+  const index = assets.findIndex(entry => entry?.id === asset?.id);
+  const legacy = index >= 0 && Array.isArray(post?.dailyPhotoIds) && post.dailyPhotoIds.length === assets.length
+    ? post.dailyPhotoIds[index] : null;
+  return typeof legacy === "string" && /^\d+$/.test(legacy) ? legacy : null;
+}
+
 function indexLogicalPhotos() {
   if (logicalGallery === gallery) return;
   const records = [];
@@ -105,14 +115,11 @@ function indexLogicalPhotos() {
   for (const post of gallery.posts) {
     const assets = Array.isArray(post.assets) ? post.assets : [];
     const results = Array.isArray(post.recognition?.results) ? post.recognition.results : [];
-    for (const [assetIndex, asset] of assets.entries()) {
+    for (const asset of assets) {
       if (!asset || asset.type !== "image") continue;
-      let photoId = asset.sourcePhotoId;
-      if (photoId == null && Array.isArray(post.dailyPhotoIds) && post.dailyPhotoIds.length === assets.length) {
-        photoId = post.dailyPhotoIds[assetIndex];
-      }
+      const photoId = sourcePhotoId(post, asset);
       const record = { post, asset, index: records.length,
-        photoId: typeof photoId === "string" && /^[0-9]+$/.test(photoId) ? photoId : null,
+        photoId,
         result: results.find(result => result && result.assetId === asset.id) };
       records.push(record);
       if (validId(post.id) && validId(asset.id)) byId.set(asset.id, byId.has(asset.id) ? null : record);
@@ -219,7 +226,7 @@ async function submitPhotoFeedback(postId, asset, button) {
   }
 }
 
-function mediaCard(postId, asset, result, photoIndex) {
+function mediaCard(postId, asset, result, photoIndex, photoId=null) {
   const card = element("figure", "media-card");
   if (asset.userExcluded === true) card.classList.toggle("user-excluded", true);
   const url = mediaUrl(asset.path);
@@ -239,9 +246,29 @@ function mediaCard(postId, asset, result, photoIndex) {
     card.prepend(message);
   });
   image.src = url;
-  card.append(image);
+  const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
+    ? photoId : null;
+  if (candidatePhotoId) {
+    const originalUrl = "https://www.facebook.com/photo/?fbid=" + encodeURIComponent(candidatePhotoId);
+    const imageLink = element("a", "media-source-image-link");
+    imageLink.href = originalUrl;
+    imageLink.target = "_blank";
+    imageLink.rel = "noopener noreferrer";
+    imageLink.setAttribute("aria-label", "在新分頁開啟這張照片的 Facebook 原照");
+    imageLink.title = "在 Facebook 查看原照片";
+    imageLink.append(image);
+    card.append(imageLink);
+  } else card.append(image);
   const caption = element("figcaption", "media-caption");
   caption.append(element("span", "media-name", asset.name || "本機照片"));
+  if (candidatePhotoId) {
+    const originalLink = element("a", "photo-source-link", "查看 FB 原照片 ↗");
+    originalLink.href = "https://www.facebook.com/photo/?fbid=" + encodeURIComponent(candidatePhotoId);
+    originalLink.target = "_blank";
+    originalLink.rel = "noopener noreferrer";
+    originalLink.setAttribute("aria-label", "在新分頁開啟這張照片的 Facebook 原照");
+    caption.append(originalLink);
+  }
   const labels = {
     no_match: "人臉比對未命中 · 不代表孩子沒有出現",
     no_face: "未偵測到人臉 · 尚無可供比對的人臉",
@@ -282,7 +309,8 @@ function postCard(post, displayedPhotos) {
   header.append(heading);
   article.append(header);
   const grid = element("div", "media-grid");
-  displayedPhotos.forEach(({ asset, result }, index) => grid.append(mediaCard(post.id, asset, result, index)));
+  displayedPhotos.forEach(({ asset, result }, index) =>
+    grid.append(mediaCard(post.id, asset, result, index, sourcePhotoId(post, asset))));
   article.append(grid);
   return article;
 }
