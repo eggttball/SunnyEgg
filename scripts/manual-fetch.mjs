@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { access, mkdir, readFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
@@ -13,6 +13,7 @@ const COUNT_FIELDS = [
   'unprocessedObservations',
 ];
 const TERMINAL_STATES = new Set(['complete', 'partial', 'blocked', 'failed']);
+const PROGRESS_PHASES = new Set(['preparing', 'scanning', 'resolving', 'downloading', 'recognizing', 'saving', 'finalizing']);
 const MESSAGES = {
   idle: '尚未啟動手動抓取。',
   running: '正在抓取照片並進行本機比對，請稍候。',
@@ -118,6 +119,17 @@ function safeResult(report) {
   return { state: report.state, message, ...(Object.keys(counts).length ? { counts } : {}) };
 }
 
+function safeProgress(value) {
+  if (!value || typeof value !== 'object' || !PROGRESS_PHASES.has(value.phase)) return null;
+  const progress = { phase: value.phase };
+  for (const key of ['scrolls', 'scrollLimit', 'discoveredPosts', 'completedPosts', 'totalPosts',
+    'currentPost', 'currentPhoto', 'currentPhotoTotal']) {
+    const number = value[key];
+    if (Number.isSafeInteger(number) && number >= 0) progress[key] = number;
+  }
+  return progress;
+}
+
 export function createManualFetchController({ root, runner = createManualFetchRunner({ root }), clock = () => new Date() }) {
   let status = { state: 'idle', message: MESSAGES.idle };
   const getStatus = () => structuredClone(status);
@@ -128,12 +140,20 @@ export function createManualFetchController({ root, runner = createManualFetchRu
       if (status.state === 'running') throw new ManualFetchError(409, '已有手動照片工作執行中，請等待完成。');
       const now = clock();
       const range = validateRange(input, now);
-      status = { state: 'running', range, startedAt: now.toISOString(), message: MESSAGES.running, runId: 'manual-' + randomUUID() };
+      status = { state: 'running', range, startedAt: now.toISOString(), message: MESSAGES.running,
+        runId: 'manual-' + randomUUID(), progress: { phase: 'preparing' } };
       const accepted = getStatus();
-      Promise.resolve().then(() => runner({ ...range, runId: accepted.runId })).then(report => {
-        status = { ...accepted, ...safeResult(report), finishedAt: clock().toISOString() };
+      const runnerInput = { ...range, runId: accepted.runId };
+      Object.defineProperty(runnerInput, 'onProgress', { value: value => {
+        const progress = safeProgress(value);
+        if (progress && status.state === 'running' && status.runId === accepted.runId) status = { ...status, progress };
+      } });
+      Promise.resolve().then(() => runner(runnerInput)).then(report => {
+        const { progress, ...terminal } = accepted;
+        status = { ...terminal, ...safeResult(report), finishedAt: clock().toISOString() };
       }).catch(() => {
-        status = { ...accepted, state: 'failed', message: MESSAGES.failed, finishedAt: clock().toISOString() };
+        const { progress, ...terminal } = accepted;
+        status = { ...terminal, state: 'failed', message: MESSAGES.failed, finishedAt: clock().toISOString() };
       });
       return accepted;
     },
@@ -142,20 +162,45 @@ export function createManualFetchController({ root, runner = createManualFetchRu
 
 export function createManualFetchRunner({ root }) {
   const projectRoot = resolve(root);
-  return async ({ startDate, endDate }) => {
+  return async ({ startDate, endDate, onProgress }) => {
     if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) throw new Error('Invalid date range');
     const venvPython = resolve(projectRoot, '.venv/bin/python');
     const executable = await access(venvPython, constants.X_OK).then(() => venvPython, () => 'python3');
+    const progressEnabled = typeof onProgress === 'function';
+    const progressId = progressEnabled ? randomUUID() : null;
+    const progressDirectory = progressEnabled ? resolve(projectRoot, 'data', 'runs') : null;
+    const progressFile = progressEnabled ? resolve(progressDirectory, `.manual-progress-${progressId}.json`) : null;
+    if (progressEnabled) await mkdir(progressDirectory, { recursive: true, mode: 0o700 });
     const args = [
       resolve(projectRoot, 'scripts/daily.py'), '--root', projectRoot,
       '--env-file', resolve(projectRoot, '.env'),
       '--start-date', startDate, '--end-date', endDate, '--max-scrolls', '100',
     ];
+    if (progressId) args.push('--progress-id', progressId);
     return new Promise((resolveReport, reject) => {
       const child = spawn(executable, args, { cwd: projectRoot, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
       const chunks = [];
       let bytes = 0;
       let overflow = false;
+      let readingProgress = false;
+      const readProgress = async () => {
+        if (readingProgress) return;
+        readingProgress = true;
+        try {
+          const value = JSON.parse(await readFile(progressFile, 'utf8'));
+          const progress = safeProgress(value);
+          if (progress) onProgress(progress);
+        } catch { /* Progress is best effort; the photo job remains authoritative. */ }
+        finally { readingProgress = false; }
+      };
+      const progressTimer = progressEnabled ? setInterval(() => { void readProgress(); }, 500) : null;
+      progressTimer?.unref?.();
+      const cleanup = async () => {
+        if (progressTimer) clearInterval(progressTimer);
+        if (!progressEnabled) return;
+        await readProgress();
+        await unlink(progressFile).catch(() => {});
+      };
       child.stdout.on('data', chunk => {
         bytes += chunk.length;
         if (bytes > MAX_REPORT_BYTES) {
@@ -164,8 +209,12 @@ export function createManualFetchRunner({ root }) {
         } else chunks.push(chunk);
       });
       child.stderr.on('data', () => {});
-      child.on('error', () => reject(new Error('Photo job could not start')));
-      child.on('close', (code, signal) => {
+      child.on('error', async () => {
+        await cleanup();
+        reject(new Error('Photo job could not start'));
+      });
+      child.on('close', async (code, signal) => {
+        await cleanup();
         try {
           if (overflow || signal) throw new Error();
           const report = JSON.parse(Buffer.concat(chunks).toString('utf8'));

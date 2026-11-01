@@ -538,6 +538,67 @@ function scheduleManualPoll() {
   manualPollTimer = setTimeout(() => { manualPollTimer = null; reconcileManualStatus(); }, 2000);
 }
 
+function appendManualProgress(container, status) {
+  const progress = status.progress;
+  if (status.state !== "running" || !progress || typeof progress !== "object") return;
+  const titles = {
+    preparing: "準備本機辨識",
+    scanning: "掃描貼文列表",
+    resolving: "讀取貼文資訊",
+    downloading: "下載照片",
+    recognizing: "辨識照片",
+    saving: "保存照片與結果",
+    finalizing: "整理抓取結果",
+  };
+  const title = titles[progress.phase];
+  if (!title) return;
+  const panel = element("div", "fetch-progress");
+  panel.setAttribute("aria-live", "off");
+  panel.append(element("strong", "fetch-progress-title", title));
+
+  let detail = "工作正在進行，請稍候。";
+  if (progress.phase === "scanning" && validCount(progress.scrolls) && validCount(progress.scrollLimit)) {
+    detail = `已捲動 ${progress.scrolls}/${progress.scrollLimit} 次 · 發現 ${validCount(progress.discoveredPosts) ? progress.discoveredPosts : 0} 篇照片貼文`;
+  } else if (validCount(progress.totalPosts) && progress.totalPosts > 0) {
+    const completed = Math.min(validCount(progress.completedPosts) ? progress.completedPosts : 0, progress.totalPosts);
+    const current = Math.min(validCount(progress.currentPost) && progress.currentPost > 0
+      ? progress.currentPost : completed + 1, progress.totalPosts);
+    detail = `貼文 ${current}/${progress.totalPosts} · 已完成 ${completed}/${progress.totalPosts} 篇`;
+    if (["downloading", "recognizing"].includes(progress.phase) &&
+        validCount(progress.currentPhoto) && validCount(progress.currentPhotoTotal) && progress.currentPhotoTotal > 0) {
+      detail += ` · 照片 ${Math.min(progress.currentPhoto, progress.currentPhotoTotal)}/${progress.currentPhotoTotal} 張`;
+    }
+  } else if (progress.phase === "resolving") detail = "正在整理已發現的貼文。";
+
+  panel.append(element("span", "fetch-progress-detail", detail));
+  const track = element("div", "fetch-progress-track");
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-label", "貼文抓取進度");
+  const fill = element("div", "fetch-progress-fill");
+  if (progress.phase === "scanning" || progress.phase === "preparing" || !validCount(progress.totalPosts) || progress.totalPosts === 0) {
+    track.setAttribute("aria-valuetext", "進行中");
+    fill.classList.add("indeterminate");
+  } else {
+    const completed = Math.min(validCount(progress.completedPosts) ? progress.completedPosts : 0, progress.totalPosts);
+    let withinPost = 0;
+    if (["downloading", "recognizing"].includes(progress.phase) &&
+        validCount(progress.currentPhoto) && validCount(progress.currentPhotoTotal) && progress.currentPhotoTotal > 0) {
+      const photoRatio = Math.min(progress.currentPhoto / progress.currentPhotoTotal, 1);
+      withinPost = progress.phase === "downloading" ? 0.05 + 0.45 * photoRatio : 0.5 + 0.45 * photoRatio;
+    } else if (progress.phase === "saving") withinPost = 0.98;
+    else if (progress.phase === "resolving") withinPost = 0.05;
+    const ratio = Math.min(0.99, (completed + withinPost) / progress.totalPosts);
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", String(progress.totalPosts));
+    track.setAttribute("aria-valuenow", String(Math.min(progress.totalPosts, completed + withinPost)));
+    track.setAttribute("aria-valuetext", `${Math.round(ratio * 100)}%`);
+    fill.style.width = `${Math.round(ratio * 100)}%`;
+  }
+  track.append(fill);
+  panel.append(track);
+  container.append(panel);
+}
+
 function applyManualStatus(status, refreshGallery = true) {
   const labels = { idle: "", running: "貼文抓取進行中", complete: "貼文抓取已完成", partial: "貼文抓取部分完成", blocked: "貼文抓取受阻", failed: "貼文抓取失敗" };
   if (!status || !Object.hasOwn(labels, status.state)) throw new Error("Invalid fetch status");
@@ -554,6 +615,7 @@ function applyManualStatus(status, refreshGallery = true) {
       ui.manualStatus.append(element("p", "", `${status.range.startDate} 至 ${status.range.endDate}（台灣時間，含起訖日）`));
     }
     if (typeof status.message === "string" && status.message) ui.manualStatus.append(element("p", "", status.message));
+    appendManualProgress(ui.manualStatus, status);
     appendRunCounts(ui.manualStatus, status);
     if (typeof status.finishedAt === "string" && Number.isFinite(Date.parse(status.finishedAt))) {
       ui.manualStatus.append(element("p", "job-time", `結束時間：${runDateFormatter.format(new Date(status.finishedAt))}（台灣時間）`));

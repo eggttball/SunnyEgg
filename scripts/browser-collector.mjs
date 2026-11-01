@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // Dedicated-profile browser discovery. Never exports authentication or raw page data.
-import { access, mkdir, lstat } from 'node:fs/promises';
+import { access, mkdir, lstat, rename, unlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const PAGE = 'https://www.facebook.com/profile.php?id=100063963161862';
 const SECRET = /^(?:access_token|appsecret_proof|oauth_token|token|authorization)$/i;
+const PROGRESS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MESSAGES = {
   browser_dependency_missing:'Playwright 尚未安裝；請在專案目錄執行 npm install。',
   browser_missing:'Playwright Chromium 尚未安裝或無法執行；請執行 npx playwright install chromium。',
@@ -114,6 +116,24 @@ async function snapshot(page, scroll=false) {
   },scroll);
 }
 
+async function writeDiscoveryProgress(progressId, progress) {
+  if (!progressId) return;
+  const root = resolve(process.cwd());
+  const dataDirectory = resolve(root, 'data');
+  const runsDirectory = resolve(dataDirectory, 'runs');
+  const target = resolve(runsDirectory, `.manual-progress-${progressId}.json`);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const dataInfo = await lstat(dataDirectory);
+    const runsInfo = await lstat(runsDirectory);
+    if (dataInfo.isSymbolicLink() || runsInfo.isSymbolicLink() || !dataInfo.isDirectory() || !runsInfo.isDirectory()) return;
+    await writeFile(temporary, JSON.stringify(progress) + '\n', { flag: 'wx', mode: 0o600 });
+    await rename(temporary, target);
+  } catch {
+    await unlink(temporary).catch(() => {});
+  }
+}
+
 async function contextFor(profile, login, loadPlaywright, extraOptions={}) {
   const path = resolve(profile);
   if (login) {
@@ -153,7 +173,7 @@ async function navigate(page, url) {
   catch {throw new CollectorError('facebook_navigation_failed');}
 }
 
-async function discover(profile, maxScrolls, loadPlaywright) {
+async function discover(profile, maxScrolls, loadPlaywright, progressId=null) {
   // Includes navigation and heading hydration; stays below the caller's 300s timeout.
   const deadline = Date.now()+240000;
   const context = await contextFor(profile,false,loadPlaywright);
@@ -172,15 +192,21 @@ async function discover(profile, maxScrolls, loadPlaywright) {
       for (const post of collectObservations(state.observations).posts) seenPosts.add(post.albumPostId || `photo:${post.photoId}`);
       return null;
     };
+    const reportProgress = () => writeDiscoveryProgress(progressId, {
+      phase:'scanning', scrolls, scrollLimit:maxScrolls, discoveredPosts:seenPosts.size,
+    });
     let state=await snapshot(page), blocked=record(state);
+    await reportProgress();
     while (!blocked && scrolls<maxScrolls && Date.now()<deadline) {
       state=await snapshot(page,true);
       scrolls++;
       blocked=record(state);
+      await reportProgress();
       if (blocked) break;
       await page.waitForTimeout(Math.min(800,Math.max(0,deadline-Date.now())));
       state=await snapshot(page);
       blocked=record(state);
+      await reportProgress();
       if (blocked) break;
       if (state.scroll.bottomDistance>2) continue;
 
@@ -195,6 +221,7 @@ async function discover(profile, maxScrolls, loadPlaywright) {
         loadWaitMs+=interval;
         state=await snapshot(page);
         blocked=record(state);
+        await reportProgress();
         if (blocked) break;
         const after=state.scroll;
         if (seenPosts.size>beforeCount || after.top!==before.top || after.height!==before.height ||
@@ -337,9 +364,11 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
   args=[...args];
   const command=args.shift();
   const options={};
-  while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
+  while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id','--progress-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
   if(!['login','discover','react','react-photo'].includes(command) || !options['--profile'] ||
-      (command!=='react-photo' && Object.hasOwn(options,'--photo-id'))) throw new CollectorError('invalid_arguments');
+      (command!=='react-photo' && Object.hasOwn(options,'--photo-id')) ||
+      (command!=='discover' && Object.hasOwn(options,'--progress-id')) ||
+      (Object.hasOwn(options,'--progress-id') && !PROGRESS_ID.test(options['--progress-id']))) throw new CollectorError('invalid_arguments');
   if(command==='react-photo') {
     if(Object.keys(options).some(key=>!['--profile','--photo-id'].includes(key))) throw new CollectorError('invalid_arguments');
     return reactPhoto(options['--profile'],options['--photo-id'],loadPlaywright);
@@ -388,7 +417,7 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
   if(command==='discover') {
     const max=Number(options['--max-scrolls'] || 12);
     if(!Number.isInteger(max) || max<1 || max>100) throw new CollectorError('invalid_arguments');
-    return discover(options['--profile'],max,loadPlaywright);
+    return discover(options['--profile'],max,loadPlaywright,options['--progress-id'] || null);
   }
   if(command==='react' && options['--url']) return react(options['--profile'],options['--url'],loadPlaywright);
   throw new CollectorError('invalid_arguments');

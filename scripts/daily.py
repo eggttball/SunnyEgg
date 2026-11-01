@@ -171,6 +171,18 @@ def _atomic_json(root, relative, value):
             os.unlink(temporary)
 
 
+def _manual_progress(root, progress_id, phase, **values):
+    if progress_id is None:
+        return
+    try:
+        if str(uuid.UUID(progress_id)) != progress_id:
+            return
+        _atomic_json(root, 'runs/.manual-progress-' + progress_id + '.json', {'phase': phase, **values})
+    except (MediaError, OSError, TypeError, ValueError):
+        # Progress is advisory and must never interrupt photo processing.
+        return
+
+
 @contextmanager
 def _batch_lock(root):
     data_directory(root, create=True)
@@ -211,12 +223,14 @@ def _configuration(root, env_file):
     return token, version, page, profile, config.get('autoLike', True), max_scrolls
 
 
-def _browser(root, command, profile, target=None, max_scrolls=12):
+def _browser(root, command, profile, target=None, max_scrolls=12, progress_id=None):
     argv = ['node', str(ROOT / 'scripts/browser-collector.mjs'), command, '--profile', str(profile)]
     if target is not None:
         argv.extend(['--photo-id' if command == 'react-photo' else '--url', target])
     if command == 'discover':
         argv.extend(['--max-scrolls', str(max_scrolls)])
+        if progress_id is not None:
+            argv.extend(['--progress-id', progress_id])
     # The collector uses its own login profile and has no reason to inherit API credentials.
     environment = {key: value for key, value in os.environ.items() if key in {'PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'SYSTEMROOT', 'WINDIR'}}
     try:
@@ -263,11 +277,16 @@ def _safe_coverage(value):
     return result
 
 
-def _discovery(root, discovery_file, simulate, profile, max_scrolls):
+def _discovery(root, discovery_file, simulate, profile, max_scrolls, progress_id=None):
     if simulate and discovery_file is None:
         raise DailyError('invalid_discovery')
     try:
-        body = _read_json(Path(discovery_file)) if discovery_file is not None else _browser(root, 'discover', profile, max_scrolls=max_scrolls)
+        if discovery_file is not None:
+            body = _read_json(Path(discovery_file))
+        elif progress_id is None:
+            body = _browser(root, 'discover', profile, max_scrolls=max_scrolls)
+        else:
+            body = _browser(root, 'discover', profile, max_scrolls=max_scrolls, progress_id=progress_id)
         if not isinstance(body, dict) or body.get('version') != 1 or not isinstance(body.get('posts'), list) or len(body['posts']) > 500:
             raise ValueError()
         captured = _iso(body.get('capturedAt'))
@@ -794,10 +813,17 @@ def _persist_report(root, report):
 
 
 def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env_file=None, now=None,
-              start_date=None, end_date=None, max_scrolls=None, force_recheck=False):
+              start_date=None, end_date=None, max_scrolls=None, force_recheck=False, progress_id=None):
     """Run one serialized photo batch; replay still uses real API, downloads and matching."""
     root = Path(root).resolve()
     report = _report(now, simulate)
+    if progress_id is not None:
+        try:
+            if str(uuid.UUID(progress_id)) != progress_id:
+                progress_id = None
+        except (AttributeError, TypeError, ValueError):
+            progress_id = None
+    _manual_progress(root, progress_id, 'preparing')
     if discovery_file is not None:
         report['discovery']['mode'] = 'replay'
     try:
@@ -844,11 +870,20 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                     raise
                 except Exception:
                     raise DailyError('recognition_prerequisites') from None
-                discovery, observations, skipped = _discovery(root, discovery_file, simulate, profile,
-                                                              configured_max_scrolls if max_scrolls is None else max_scrolls)
+                effective_scroll_limit = configured_max_scrolls if max_scrolls is None else max_scrolls
+                _manual_progress(root, progress_id, 'scanning', scrolls=0, scrollLimit=effective_scroll_limit,
+                                 discoveredPosts=0)
+                if progress_id is None:
+                    discovery, observations, skipped = _discovery(root, discovery_file, simulate, profile,
+                                                                  effective_scroll_limit)
+                else:
+                    discovery, observations, skipped = _discovery(root, discovery_file, simulate, profile,
+                                                                  effective_scroll_limit, progress_id)
                 report['discovery'] = discovery
                 report['counts']['skippedVideos'] = skipped
                 report['counts']['discoveredPosts'] = len(observations)
+                _manual_progress(root, progress_id, 'resolving', completedPosts=0,
+                                 totalPosts=len(observations), currentPost=0)
                 if discovery['state'] == 'blocked':
                     raise DailyError(discovery['reason'] or 'browser_unavailable')
                 state_path = safe_data_path(root, 'daily-state.json')
@@ -867,9 +902,12 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                     raise DailyError('local_storage') from None
                 seen = set()
                 downloads = _private_directory(root, 'downloads')
+                completed_posts = 0
                 for observation_index, observation in enumerate(observations):
                     parent = None
                     phase = 'remote_failure'
+                    _manual_progress(root, progress_id, 'resolving', completedPosts=completed_posts,
+                                     totalPosts=len(observations), currentPost=observation_index + 1)
                     try:
                         _check_feedback_current(root, engine.negative_profile['fingerprint'])
                         item = resolve_photo_post(observation['photoId'], token, version, page,
@@ -911,6 +949,9 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                             _atomic_json(root, 'daily-state.json', state)
                             continue
                         phase = 'download_failure'
+                        _manual_progress(root, progress_id, 'downloading', completedPosts=completed_posts,
+                                         totalPosts=len(observations), currentPost=observation_index + 1,
+                                         currentPhoto=0, currentPhotoTotal=len(item['photoIds']))
                         with tempfile.TemporaryDirectory(prefix='.daily-', dir=str(downloads)) as temporary:
                             files = []
                             photo_lookups = 0
@@ -922,17 +963,30 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                                 path = facebook.download_native(source, Path(temporary), index, 'photos')
                                 os.chmod(path, 0o600)
                                 files.append(path)
+                                _manual_progress(root, progress_id, 'downloading', completedPosts=completed_posts,
+                                                 totalPosts=len(observations), currentPost=observation_index + 1,
+                                                 currentPhoto=index, currentPhotoTotal=len(item['photoIds']))
                             phase = 'recognition_failure'
-                            results = [_safe_result(recognize.analyze_image(path, engine, references, threshold, photo_id=photo_id))
-                                       for photo_id, path in zip(item['photoIds'], files)]
+                            results = []
+                            for index, (photo_id, path) in enumerate(zip(item['photoIds'], files), 1):
+                                results.append(_safe_result(recognize.analyze_image(path, engine, references, threshold,
+                                                                                   photo_id=photo_id)))
+                                _manual_progress(root, progress_id, 'recognizing', completedPosts=completed_posts,
+                                                 totalPosts=len(observations), currentPost=observation_index + 1,
+                                                 currentPhoto=index, currentPhotoTotal=len(files))
                             _check_feedback_current(root, engine.negative_profile['fingerprint'])
                             phase = 'import_failure'
                             previous_feedback_fingerprint = engine.negative_profile['fingerprint']
                             gallery_id = _gallery_record(root, item, files, results, engine, references, threshold, report['startedAt'])
                             if engine.negative_profile['fingerprint'] != previous_feedback_fingerprint:
                                 _check_feedback_current(root, engine.negative_profile['fingerprint'])
-                                results = [_safe_result(recognize.analyze_image(path, engine, references, threshold, photo_id=photo_id))
-                                           for photo_id, path in zip(item['photoIds'], files)]
+                                results = []
+                                for index, (photo_id, path) in enumerate(zip(item['photoIds'], files), 1):
+                                    results.append(_safe_result(recognize.analyze_image(path, engine, references,
+                                                                                       threshold, photo_id=photo_id)))
+                                    _manual_progress(root, progress_id, 'recognizing', completedPosts=completed_posts,
+                                                     totalPosts=len(observations), currentPost=observation_index + 1,
+                                                     currentPhoto=index, currentPhotoTotal=len(files))
                                 _check_feedback_current(root, engine.negative_profile['fingerprint'])
                                 fingerprint = _fingerprint(paths + models, threshold, engine.negative_profile['fingerprint'], reference_threshold_margin)
                                 gallery_id = _gallery_record(root, item, files, results, engine, references, threshold, report['startedAt'])
@@ -969,6 +1023,8 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                                                  'resolverVersion': facebook.ATTACHMENT_RESOLVER_VERSION,
                                                  'galleryFingerprint': gallery_fingerprint, 'audit': audit}
                         _atomic_json(root, 'daily-state.json', state)
+                        _manual_progress(root, progress_id, 'saving', completedPosts=completed_posts,
+                                         totalPosts=len(observations), currentPost=observation_index + 1)
                     except Exception as error:
                         reason = _reason(error, locals().get('phase', 'remote_failure'))
                         report['counts']['failedPosts'] += 1
@@ -979,6 +1035,10 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                         if reason in {'rate_limit', 'feedback_changed', 'feedback_unavailable'}:
                             report['counts']['unprocessedObservations'] = len(observations) - observation_index - 1
                             break
+                    finally:
+                        completed_posts = observation_index + 1
+                        _manual_progress(root, progress_id, 'resolving', completedPosts=completed_posts,
+                                         totalPosts=len(observations), currentPost=0)
                 if report['failures']:
                     report['state'] = 'partial' if report['counts']['processedPosts'] or report['counts']['skippedPosts'] else 'blocked'
                     terminal = report['failures'][-1]
@@ -994,6 +1054,9 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
             except Exception as error:
                 reason = _reason(error, 'local_storage')
                 report.update(state='blocked', reason=reason, message=MESSAGES[reason])
+            _manual_progress(root, progress_id, 'finalizing', completedPosts=report['counts']['processedPosts'] +
+                             report['counts']['skippedPosts'] + report['counts']['failedPosts'],
+                             totalPosts=report['counts']['discoveredPosts'])
             return _persist_report(root, report)
     except Exception as error:
         reason = _reason(error, 'local_storage')
@@ -1019,6 +1082,14 @@ def main(argv=None):
     parser.add_argument('--force-recheck', action='store_true', help='重新下載並比對範圍內完整照片貼文，略過既有檢查快取')
     parser.add_argument('--start-date', help='台北開始日期 YYYY-MM-DD，須與結束日期一起指定')
     parser.add_argument('--end-date', help='台北結束日期 YYYY-MM-DD，包含當天')
+    def progress_identifier(value):
+        try:
+            if str(uuid.UUID(value)) != value:
+                raise ValueError()
+            return value
+        except (AttributeError, TypeError, ValueError):
+            raise argparse.ArgumentTypeError('進度識別碼無效') from None
+    parser.add_argument('--progress-id', type=progress_identifier, help=argparse.SUPPRESS)
     def scroll_limit(value):
         try:
             result = int(value)
@@ -1031,7 +1102,7 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     report = run_daily(arguments.root, arguments.discovery_file, arguments.simulate, arguments.threshold, arguments.env_file,
                        start_date=arguments.start_date, end_date=arguments.end_date, max_scrolls=arguments.max_scrolls,
-                       force_recheck=arguments.force_recheck)
+                       force_recheck=arguments.force_recheck, progress_id=arguments.progress_id)
     print(json.dumps(report, ensure_ascii=False, allow_nan=False))
     return 0 if report['state'] == 'complete' else 2 if report['state'] == 'partial' else 1
 

@@ -15,3 +15,11 @@
 .post-heading{flex:1;min-width:0}
 .post-meta{align-items:center;width:100%}
 .post-meta .source-link{margin-left:auto;margin-top:0}
+.fetch-progress{display:grid;gap:7px;margin:12px 0 5px;padding:12px 13px;border:1px solid #e1e6d7;border-radius:8px;background:#f7f8f1}
+.fetch-progress-title{font-size:11px;font-weight:650;color:var(--green)}
+.fetch-progress-detail{font-size:10px;color:var(--muted);line-height:1.7;overflow-wrap:anywhere}
+.fetch-progress-track{position:relative;height:7px;overflow:hidden;border-radius:20px;background:#e5e8dc}
+.fetch-progress-fill{height:100%;width:0;border-radius:inherit;background:var(--green);transition:width .25s ease}
+.fetch-progress-fill.indeterminate{position:absolute;width:34%;animation:fetch-progress-slide 1.4s ease-in-out infinite}
+@keyframes fetch-progress-slide{0%{left:-36%}100%{left:102%}}
+@media(prefers-reduced-motion:reduce){.fetch-progress-fill{transition:none}.fetch-progress-fill.indeterminate{animation-duration:3s}}
