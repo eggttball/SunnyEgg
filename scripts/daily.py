@@ -69,6 +69,9 @@ MESSAGES = {
     'not_photos_only': '父貼文包含影片或不支援附件；未匯入。',
     'post_unavailable': '指定貼文無法載入，或頁面尚未登入可查看。',
     'post_no_photos': '指定貼文沒有可辨識的照片。',
+    'source_page_unverified': '無法確認指定貼文屬於小鹿托嬰中心；未下載照片。',
+    'album_incomplete': 'Facebook 相簿未能完整瀏覽；未匯入不完整照片。',
+    'album_limit': '相簿照片超過單次處理上限；未匯入不完整照片。',
     'invalid_post_url': '請貼上小鹿托嬰中心 Facebook 的貼文網址。',
     'photo_unavailable': 'Facebook 未提供可下載的原生照片；未匯入。',
     'unsupported_media': '原生照片格式不受支援；未匯入。',
@@ -82,7 +85,7 @@ BROWSER_ERROR_REASONS = {
     'browser_unavailable', 'browser_dependency_missing', 'browser_missing',
     'profile_missing', 'profile_unavailable', 'profile_in_use', 'browser_launch_failed',
     'facebook_navigation_failed', 'login_cancelled', 'invalid_arguments', 'login_required',
-    'post_unavailable', 'post_no_photos',
+    'post_unavailable', 'post_no_photos', 'source_page_unverified', 'album_incomplete', 'album_limit',
 }
 
 
@@ -267,6 +270,8 @@ def _browser(root, command, profile, target=None, max_scrolls=12, progress_id=No
         argv.extend(['--max-scrolls', str(max_scrolls)])
         if progress_id is not None:
             argv.extend(['--progress-id', progress_id])
+    elif command == 'collect-post-photos' and progress_id is not None:
+        argv.extend(['--progress-id', progress_id])
     # The collector uses its own login profile and has no reason to inherit API credentials.
     environment = {key: value for key, value in os.environ.items() if key in {'PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'SYSTEMROOT', 'WINDIR'}}
     try:
@@ -359,6 +364,56 @@ def _discovery(root, discovery_file, simulate, profile, max_scrolls, progress_id
         raise DailyError('invalid_discovery') from None
     except (MediaError, OSError, ValueError, TypeError, UnicodeError):
         raise DailyError('invalid_discovery') from None
+
+
+def _browser_post_photo_item(root, profile, post_url, page, seed_photo_id, progress_id=None):
+    """Resolve every photo from an authenticated browser album when Graph cannot read it."""
+    body = _browser(root, 'collect-post-photos', profile, target=post_url, progress_id=progress_id)
+    if not isinstance(body, dict) or body.get('version') != 1:
+        raise DailyError('album_incomplete')
+    if body.get('state') != 'complete':
+        reason = body.get('reason')
+        raise DailyError(reason if reason in MESSAGES else 'album_incomplete')
+    page_id = body.get('postPageId')
+    source_page_id = dict(parse_qsl(urlsplit(SOURCE_PAGE).query)).get('id')
+    allowed_page_ids = {page, source_page_id, VERIFIED_POST_PAGE_ALIASES.get(page)}
+    if not isinstance(page_id, str) or page_id not in allowed_page_ids:
+        raise DailyError('wrong_page')
+    photos = body.get('photos')
+    if not isinstance(photos, list) or not photos or len(photos) > 200:
+        raise DailyError('album_incomplete')
+    identifiers, sources = [], {}
+    for photo in photos:
+        if not isinstance(photo, dict):
+            raise DailyError('album_incomplete')
+        identifier = photo.get('photoId')
+        source = photo.get('sourceUrl')
+        if not isinstance(identifier, str) or re.fullmatch(r'[0-9]+', identifier) is None or identifier in sources:
+            raise DailyError('album_incomplete')
+        try:
+            source = facebook.checked_url(source)
+        except facebook.FetchError:
+            raise DailyError('unsafe_url') from None
+        identifiers.append(identifier)
+        sources[identifier] = source
+    if seed_photo_id not in sources:
+        raise DailyError('invalid_response')
+    parts = urlsplit(post_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    post_key = query.get('story_fbid')
+    if post_key is None:
+        match = re.search(r'/(?:posts|share/p)/([^/]+)$', parts.path)
+        post_key = match.group(1) if match else parts.path
+    identity_key = hashlib.sha256((page_id + ':' + post_key).encode()).hexdigest()
+    published_at = body.get('publishedAt')
+    if published_at is not None:
+        published_at = _iso(published_at)
+    return {'sourceId': 'browser:' + identity_key, 'retrievalPostId': 'browser:' + identity_key,
+            'sourceUrl': post_url, 'photoIds': identifiers, 'photoSources': sources,
+            'photoSourceMode': 'browser_album', 'resolverVersion': facebook.ATTACHMENT_RESOLVER_VERSION,
+            'publishedAt': published_at, 'title': '照片貼文',
+            'attachments': {'state': 'complete', 'method': 'authenticated_browser_album_walk',
+                            'photoCount': len(identifiers)}}
 
 
 def _graph_object(identifier, fields, token, version):
@@ -961,9 +1016,18 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                                      totalPosts=len(observations), currentPost=observation_index + 1)
                     try:
                         _check_feedback_current(root, engine.negative_profile['fingerprint'])
-                        item = resolve_photo_post(observation['photoId'], token, version, page,
-                                                  allow_missing_date=window is not None, date_window=window,
-                                                  photos_only=post_url is not None)
+                        try:
+                            item = resolve_photo_post(observation['photoId'], token, version, page,
+                                                      allow_missing_date=window is not None, date_window=window,
+                                                      photos_only=post_url is not None)
+                        except facebook.FetchError as error:
+                            if post_url is None or error.reason != 'permission':
+                                raise
+                            _manual_progress(root, progress_id, 'collecting', completedPosts=completed_posts,
+                                             totalPosts=len(observations), currentPost=observation_index + 1,
+                                             currentPhoto=0)
+                            item = _browser_post_photo_item(root, profile, post_url, page,
+                                                            observation['photoId'], progress_id)
                         parent = item['sourceId']
                         if parent in seen:
                             report['counts']['duplicatePosts'] += 1
@@ -1049,8 +1113,8 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                                  'retainedPhotoCount': 0, 'checkedAt': report['startedAt'],
                                  'attachments': item['attachments'], 'resolverVersion': item['resolverVersion'],
                                  'checkMode': 'fresh', 'newInspectedPhotoCount': len(results),
-                                 'photoSourceMode': 'attachment_media' if photo_lookups == 0 else 'largest_photo_image' if photo_lookups == len(results) else 'mixed',
-                                 'photoSourceQuality': 'attachment_provided' if photo_lookups == 0 else 'largest_available' if photo_lookups == len(results) else 'mixed',
+                                 'photoSourceMode': item.get('photoSourceMode') or ('attachment_media' if photo_lookups == 0 else 'largest_photo_image' if photo_lookups == len(results) else 'mixed'),
+                                 'photoSourceQuality': 'browser_viewer' if item.get('photoSourceMode') == 'browser_album' else 'attachment_provided' if photo_lookups == 0 else 'largest_available' if photo_lookups == len(results) else 'mixed',
                                  'photoObjectLookups': photo_lookups,
                                  'results': [{'photoId': photo_id, **result} for photo_id, result in zip(item['photoIds'], results)],
                                  'counts': _recognition_record(results, threshold, len(references), report['startedAt'])['summary'],

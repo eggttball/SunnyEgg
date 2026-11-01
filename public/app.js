@@ -592,6 +592,7 @@ function appendManualProgress(container, status) {
     opening_post: "開啟指定貼文",
     scanning: "掃描貼文列表",
     resolving: "讀取貼文資訊",
+    collecting: "讀取相簿照片",
     downloading: "下載照片",
     recognizing: "辨識照片",
     saving: "保存照片與結果",
@@ -605,6 +606,7 @@ function appendManualProgress(container, status) {
 
   let detail = "工作正在進行，請稍候。";
   if (progress.phase === "opening_post") detail = "直接載入該貼文，不掃描動態列表。";
+  else if (progress.phase === "collecting") detail = `已讀取 ${validCount(progress.currentPhoto) ? progress.currentPhoto : 0} 張照片；正在確認相簿完整性。`;
   else if (progress.phase === "scanning" && validCount(progress.scrolls) && validCount(progress.scrollLimit)) {
     detail = `已捲動 ${progress.scrolls}/${progress.scrollLimit} 次 · 發現 ${validCount(progress.discoveredPosts) ? progress.discoveredPosts : 0} 篇照片貼文`;
   } else if (validCount(progress.totalPosts) && progress.totalPosts > 0) {
@@ -623,7 +625,7 @@ function appendManualProgress(container, status) {
   track.setAttribute("role", "progressbar");
   track.setAttribute("aria-label", "貼文抓取進度");
   const fill = element("div", "fetch-progress-fill");
-  if (["scanning", "preparing", "opening_post"].includes(progress.phase) || !validCount(progress.totalPosts) || progress.totalPosts === 0) {
+  if (["scanning", "preparing", "opening_post", "collecting"].includes(progress.phase) || !validCount(progress.totalPosts) || progress.totalPosts === 0) {
     track.setAttribute("aria-valuetext", "進行中");
     fill.classList.add("indeterminate");
   } else {

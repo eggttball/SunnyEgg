@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const PAGE = 'https://www.facebook.com/profile.php?id=100063963161862';
+const MAX_POST_PHOTOS = 200;
 const SECRET = /^(?:access_token|appsecret_proof|oauth_token|token|authorization)$/i;
 const PROGRESS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MESSAGES = {
@@ -23,6 +24,9 @@ const MESSAGES = {
   login_required:'專用瀏覽器登入已失效，請重新登入 Facebook。',
   post_unavailable:'指定貼文無法載入，或頁面尚未登入可查看。',
   post_no_photos:'指定貼文沒有可辨識的照片。',
+  source_page_unverified:'無法確認指定貼文屬於小鹿托嬰中心；未下載照片。',
+  album_incomplete:'Facebook 相簿無法完整瀏覽；未匯入不完整照片。',
+  album_limit:'相簿照片超過單次處理上限；未匯入不完整照片。',
 };
 
 class CollectorError extends Error {
@@ -364,6 +368,7 @@ async function inspectPost(profile,value,loadPlaywright) {
       const matchingArticle=articles.find(node=>[...node.querySelectorAll('a[href]')].some(link=>sameTarget(link.href)) &&
         photoLinks(node).length>0);
       let scope=matchingArticle;
+      let directPageAlbum=null;
       if(!scope && targetLink) {
         // Single-post pages can render the post in ordinary divs rather than
         // an article/feed unit. Stay close to the permalink and stop at the
@@ -373,27 +378,165 @@ async function inspectPost(profile,value,loadPlaywright) {
         }
       }
       if(!scope && currentIsTarget) {
-        const pagePhotos=photoLinks(main);
-        if(pagePhotos.length===1) scope=main;
+        // On some permalink layouts Facebook places the post's permalink and
+        // its photo grid in separate DOM branches. Accept the page-level grid
+        // only when every visible photo link belongs to the same album set;
+        // mixed grids could include recommendations or neighboring posts.
+        const pagePhotos=photoLinks(document.body);
+        const groups=new Map();
+        for(const link of pagePhotos) {
+          const url=new URL(link.href);
+          const photoId=url.searchParams.get('fbid');
+          const set=url.searchParams.get('set') || '';
+          const key=set ? `set:${set}` : `photo:${photoId}`;
+          if(!groups.has(key)) groups.set(key,[]);
+          groups.get(key).push(link);
+        }
+        if(groups.size===1) directPageAlbum=[...groups.values()][0];
       }
       const photos=[];
-      for(const link of scope ? photoLinks(scope) : []) {
+      for(const link of directPageAlbum || (scope ? photoLinks(scope) : [])) {
         const url=new URL(link.href);
         const ids=url.searchParams.getAll('fbid');
         photos.push({photoId:ids[0],href:url.href});
       }
       const unique=[...new Map(photos.map(photo=>[photo.photoId,photo])).values()];
+      const postContainer=scope || matchingArticle || targetLink?.parentElement || (directPageAlbum ? null : main);
+      const linkedPageId=[...(postContainer?.querySelectorAll('a[href]') || [])].map(link=>{
+        try {
+          const url=new URL(link.href);
+          return url.pathname==='/profile.php' && /^\d+$/.test(url.searchParams.get('id') || '') ? url.searchParams.get('id') : null;
+        } catch {return null;}
+      }).find(Boolean);
+      const publishedAt=postContainer?.querySelector('time[datetime]')?.getAttribute('datetime') || null;
       return {loginForm:!!document.querySelector('input[name="email"],input[name="pass"]'),
         authenticated:!!document.querySelector('[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"]'),
         unavailable:/內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text),
-        articleFound:!!matchingArticle || !!targetLink || currentIsTarget,photos:unique,videoCount:scope?.querySelectorAll('video').length || 0};
+        articleFound:!!matchingArticle || !!targetLink || currentIsTarget,photos:unique,
+        pageId:expected.pageId || linkedPageId || null,publishedAt,
+        videoCount:directPageAlbum ? 0 : scope?.querySelectorAll('video').length || 0};
     },target);
     if(observed.loginForm || !observed.authenticated) throw new CollectorError('login_required');
     if(observed.unavailable || !observed.articleFound) throw new CollectorError('post_unavailable');
     if(!observed.photos.length) throw new CollectorError('post_no_photos');
-    return {version:1,state:'complete',capturedAt,posts:[{kind:'photos',photoId:observed.photos[0].photoId,
-      sourceUrl:observed.photos[0].href}],skippedVideos:observed.videoCount};
+    return {version:1,state:'complete',capturedAt,postPageId:observed.pageId,publishedAt:observed.publishedAt,
+      photoSeeds:observed.photos,posts:[{kind:'photos',photoId:observed.photos[0].photoId,
+        sourceUrl:observed.photos[0].href}],skippedVideos:observed.videoCount};
   } finally {await context.close();}
+}
+
+async function collectPostPhotos(profile,value,loadPlaywright,progressId=null) {
+  const target=normalizePostLink(value);
+  if(!target) throw new CollectorError('invalid_arguments');
+  const inspection=await inspectPost(profile,value,loadPlaywright);
+  if(inspection.state!=='complete') throw new CollectorError(inspection.reason || 'post_unavailable');
+  if(!inspection.postPageId) throw new CollectorError('source_page_unverified');
+  const seeds=Array.isArray(inspection.photoSeeds) ? inspection.photoSeeds : inspection.posts;
+  if(!Array.isArray(seeds) || !seeds.length || seeds.length>MAX_POST_PHOTOS) throw new CollectorError('album_incomplete');
+  const groups=new Map();
+  for(const seed of seeds) {
+    try {
+      const url=new URL(seed.href);
+      const photoId=url.searchParams.get('fbid'),set=url.searchParams.get('set') || '';
+      if(url.protocol!=='https:' || !['facebook.com','www.facebook.com','m.facebook.com'].includes(url.hostname) ||
+          !['/photo/','/photo','/photo.php'].includes(url.pathname) || !/^\d+$/.test(photoId || '')) throw new Error();
+      const key=set ? `set:${set}` : `photo:${photoId}`;
+      if(!groups.has(key)) groups.set(key,{href:url.href,set});
+    } catch {throw new CollectorError('album_incomplete');}
+  }
+  const context=await contextFor(profile,false,loadPlaywright);
+  const photos=new Map();
+  try {
+    const page=context.pages()[0] || await context.newPage();
+    await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:0});
+    for(const group of groups.values()) {
+      await navigate(page,group.href);
+      await page.waitForFunction(()=>{
+        const id=new URL(location.href).searchParams.get('fbid');
+        return /^\d+$/.test(id || '') && [...document.querySelectorAll('img')].some(image=>{
+          try {
+            const url=new URL(image.currentSrc || image.src);
+            return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
+              (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com'));
+          } catch {return false;}
+        });
+      },null,{timeout:15000}).catch(()=>{});
+      const readPhoto=()=>page.evaluate(()=>{
+        const photoId=new URL(location.href).searchParams.get('fbid');
+        const images=[...document.querySelectorAll('img')].filter(image=>{
+          try {
+            const url=new URL(image.currentSrc || image.src);
+            return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
+              (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com'));
+          } catch {return false;}
+        }).sort((left,right)=>right.naturalWidth*right.naturalHeight-left.naturalWidth*left.naturalHeight);
+        const image=images[0];
+        return {photoId,sourceUrl:image ? image.currentSrc || image.src : null,
+          width:image?.naturalWidth || 0,height:image?.naturalHeight || 0,
+          set:new URL(location.href).searchParams.get('set') || ''};
+      });
+      let current=await readPhoto();
+      if(!/^\d+$/.test(current.photoId || '') || !current.sourceUrl) throw new CollectorError('album_incomplete');
+      const startId=current.photoId,localSeen=new Set();
+      while(true) {
+        if(localSeen.has(current.photoId)) {
+          if(current.photoId===startId) break;
+          throw new CollectorError('album_incomplete');
+        }
+        localSeen.add(current.photoId);
+        const previous=photos.get(current.photoId);
+        if(previous && previous.sourceUrl!==current.sourceUrl) {
+          // One photo can appear in multiple visual groups; retain the newest URL.
+          photos.set(current.photoId,current);
+        } else if(!previous) photos.set(current.photoId,current);
+        if(photos.size>MAX_POST_PHOTOS) throw new CollectorError('album_limit');
+        await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:photos.size});
+
+        const selectors=['button[aria-label="下一張相片"]','[role="button"][aria-label="下一張相片"]',
+          'button[aria-label="Next photo"]','[role="button"][aria-label="Next photo"]'];
+        let next=null;
+        for(const selector of selectors) {
+          const choices=page.locator(selector);
+          for(let index=0;index<await choices.count();index++) {
+            const candidate=choices.nth(index);
+            if(await candidate.isVisible().catch(()=>false)) {next=candidate;break;}
+          }
+          if(next) break;
+        }
+        if(!next) {
+          if(group.set.startsWith('a.') || group.set.startsWith('pcb.')) throw new CollectorError('album_incomplete');
+          break;
+        }
+        const disabled=await next.getAttribute('aria-disabled').then(value=>value==='true').catch(()=>false) ||
+          await next.isDisabled().catch(()=>false);
+        if(disabled) break;
+        if(photos.size>=MAX_POST_PHOTOS) throw new CollectorError('album_limit');
+        const before={photoId:current.photoId,sourceUrl:current.sourceUrl};
+        try {await next.click({timeout:5000});}
+        catch {throw new CollectorError('album_incomplete');}
+        const advanced=await page.waitForFunction(({photoId,sourceUrl})=>{
+          const currentId=new URL(location.href).searchParams.get('fbid');
+          if(!currentId || currentId===photoId) return false;
+          return [...document.querySelectorAll('img')].some(image=>{
+            try {
+              const url=new URL(image.currentSrc || image.src);
+              return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
+                (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com')) &&
+                (image.currentSrc || image.src)!==sourceUrl;
+            } catch {return false;}
+          });
+        },before,{timeout:15000}).then(()=>true).catch(()=>false);
+        if(!advanced) throw new CollectorError('album_incomplete');
+        current=await readPhoto();
+        if(current.photoId===startId) break;
+        if(!/^\d+$/.test(current.photoId || '') || !current.sourceUrl) throw new CollectorError('album_incomplete');
+      }
+    }
+  } finally {await context.close();}
+  if(!photos.size) throw new CollectorError('post_no_photos');
+  return {version:1,state:'complete',capturedAt:new Date().toISOString(),postPageId:inspection.postPageId,
+    publishedAt:inspection.publishedAt,skippedVideos:inspection.skippedVideos,
+    photos:[...photos.values()].map(({photoId,sourceUrl})=>({photoId,sourceUrl}))};
 }
 
 async function react(profile,value,loadPlaywright) {
@@ -521,10 +664,10 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
   const command=args.shift();
   const options={};
   while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id','--progress-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
-  if(!['login','discover','inspect-post','react','react-photo'].includes(command) || !options['--profile'] ||
+  if(!['login','discover','inspect-post','collect-post-photos','react','react-photo'].includes(command) || !options['--profile'] ||
       (command!=='react-photo' && Object.hasOwn(options,'--photo-id')) ||
-      (!['discover','inspect-post'].includes(command) && Object.hasOwn(options,'--url')) ||
-      (command!=='discover' && Object.hasOwn(options,'--progress-id')) ||
+      (!['discover','inspect-post','collect-post-photos'].includes(command) && Object.hasOwn(options,'--url')) ||
+      (!['discover','collect-post-photos'].includes(command) && Object.hasOwn(options,'--progress-id')) ||
       (Object.hasOwn(options,'--progress-id') && !PROGRESS_ID.test(options['--progress-id']))) throw new CollectorError('invalid_arguments');
   if(command==='react-photo') {
     if(Object.keys(options).some(key=>!['--profile','--photo-id'].includes(key))) throw new CollectorError('invalid_arguments');
@@ -577,6 +720,7 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
     return discover(options['--profile'],max,loadPlaywright,options['--progress-id'] || null);
   }
   if(command==='inspect-post' && options['--url']) return inspectPost(options['--profile'],options['--url'],loadPlaywright);
+  if(command==='collect-post-photos' && options['--url']) return collectPostPhotos(options['--profile'],options['--url'],loadPlaywright,options['--progress-id'] || null);
   if(command==='react' && options['--url']) return react(options['--profile'],options['--url'],loadPlaywright);
   throw new CollectorError('invalid_arguments');
 }

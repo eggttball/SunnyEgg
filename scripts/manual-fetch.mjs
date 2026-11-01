@@ -13,7 +13,7 @@ const COUNT_FIELDS = [
   'unprocessedObservations',
 ];
 const TERMINAL_STATES = new Set(['complete', 'partial', 'blocked', 'failed']);
-const PROGRESS_PHASES = new Set(['preparing', 'opening_post', 'scanning', 'resolving', 'downloading', 'recognizing', 'saving', 'finalizing']);
+const PROGRESS_PHASES = new Set(['preparing', 'opening_post', 'scanning', 'resolving', 'collecting', 'downloading', 'recognizing', 'saving', 'finalizing']);
 const MESSAGES = {
   idle: '尚未啟動手動抓取。',
   running: '正在抓取照片並進行本機比對，請稍候。',
@@ -52,6 +52,9 @@ const MESSAGES = {
   invalid_post_url: '請貼上小鹿托嬰中心 Facebook 的貼文網址。',
   post_unavailable: '指定貼文無法載入，或頁面尚未登入可查看。',
   post_no_photos: '指定貼文沒有可辨識的照片。',
+  source_page_unverified: '無法確認指定貼文屬於小鹿托嬰中心；未下載照片。',
+  album_incomplete: 'Facebook 相簿未能完整瀏覽，未匯入不完整照片。',
+  album_limit: '相簿照片超過單次處理上限，未匯入不完整照片。',
 };
 
 export class ManualFetchError extends Error {
