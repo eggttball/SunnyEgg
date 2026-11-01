@@ -17,6 +17,10 @@ const ui = {
   fetchRange: document.querySelector("#fetch-range-summary"),
   fetchSubmit: document.querySelector("#manual-fetch-submit"),
   manualStatus: document.querySelector("#manual-fetch-status"),
+  manualPhotoForm: document.querySelector("#manual-photo-form"),
+  manualPhotoUrl: document.querySelector("#manual-photo-url"),
+  manualPhotoSubmit: document.querySelector("#manual-photo-submit"),
+  manualPhotoStatus: document.querySelector("#manual-photo-status"),
 };
 let gallery = null;
 let galleryRequestId = 0;
@@ -26,6 +30,8 @@ let manualOptionsFailed = false;
 let manualBusy = true;
 let manualRun = null;
 let manualPollTimer = null;
+let manualPhotoBusy = false;
+let manualPhotoPollTimer = null;
 const controlMode = new URLSearchParams(window.location.search).get("ctrl") === "1";
 document.querySelectorAll("[data-control-only]").forEach(node => { node.hidden = !controlMode; });
 const feedbackBusy = new Set();
@@ -180,8 +186,9 @@ function indexLogicalPhotos() {
   }
   for (const members of groups.values()) {
     const canonical = members.find(record => !aliases.has(record.index)) || members[0];
-    logicalPhotoIndex.get(canonical.post).push({ result: canonical.result,
-      asset: { ...canonical.asset, userExcluded: members.some(record => record.asset.userExcluded === true),
+    const manualSelection = members.some(record => record.asset.manualSelection === true);
+    logicalPhotoIndex.get(canonical.post).push({ result: manualSelection ? { state: "candidate" } : canonical.result,
+      asset: { ...canonical.asset, manualSelection, userExcluded: members.some(record => record.asset.userExcluded === true),
         logicalMembers: members.map(record => record.asset) } });
   }
   logicalGallery = gallery;
@@ -274,7 +281,8 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
     no_face: "未偵測到人臉 · 尚無可供比對的人臉",
     error: "這張照片辨識失敗 · 尚未完成檢查",
   };
-  if (result?.state !== "candidate") caption.append(element("span", "match-label", labels[result?.state] || "尚未產生辨識結果"));
+  if (asset.manualSelection === true) caption.append(element("span", "match-label", "手動加入 · 未執行辨識"));
+  else if (result?.state !== "candidate") caption.append(element("span", "match-label", labels[result?.state] || "尚未產生辨識結果"));
   if (controlMode) {
     const key = feedbackKey(postId, asset.id);
     if (asset.userExcluded === true) caption.append(element("span", "photo-excluded-label", "已排除 · 不會出現在一般相簿"));
@@ -744,6 +752,83 @@ async function submitManualFetch(event) {
   }
 }
 
+function setManualPhotoBusy(busy) {
+  manualPhotoBusy = busy;
+  ui.manualPhotoUrl.disabled = busy;
+  ui.manualPhotoSubmit.disabled = busy;
+  ui.manualPhotoForm.setAttribute("aria-busy", String(busy));
+  ui.manualPhotoSubmit.textContent = busy ? "加入中…" : "手動加入照片";
+}
+
+function applyManualPhotoStatus(status) {
+  const labels = { idle: "", running: "正在手動加入照片", complete: "手動加入完成", blocked: "手動加入受阻", failed: "手動加入失敗" };
+  if (!status || !Object.hasOwn(labels, status.state)) throw new Error("Invalid manual photo status");
+  const wasBusy = manualPhotoBusy;
+  clearTimeout(manualPhotoPollTimer);
+  manualPhotoPollTimer = null;
+  setManualPhotoBusy(status.state === "running");
+  ui.manualPhotoStatus.replaceChildren();
+  ui.manualPhotoStatus.hidden = status.state === "idle";
+  if (status.state !== "idle") {
+    ui.manualPhotoStatus.append(element("strong", "", labels[status.state]));
+    if (typeof status.message === "string" && status.message) ui.manualPhotoStatus.append(element("p", "", status.message));
+    if (typeof status.finishedAt === "string" && Number.isFinite(Date.parse(status.finishedAt))) {
+      ui.manualPhotoStatus.append(element("p", "job-time", `結束時間：${runDateFormatter.format(new Date(status.finishedAt))}（台灣時間）`));
+    }
+  }
+  if (status.state === "running") {
+    manualPhotoPollTimer = setTimeout(reconcileManualPhotoStatus, 900);
+  } else if (wasBusy && status.state === "complete") {
+    ui.manualPhotoUrl.value = "";
+    loadGallery();
+  }
+}
+
+async function reconcileManualPhotoStatus() {
+  try {
+    const { response, data } = await manualRequest("/api/manual-photo/status?ctrl=1");
+    if (!response.ok) throw new Error("Status unavailable");
+    applyManualPhotoStatus(data);
+  } catch {
+    setManualPhotoBusy(true);
+    ui.manualPhotoStatus.hidden = false;
+    ui.manualPhotoStatus.replaceChildren(element("strong", "", "暫時無法確認手動加入狀態，正在重新連線。"));
+    manualPhotoPollTimer = setTimeout(reconcileManualPhotoStatus, 1200);
+  }
+}
+
+async function initializeManualPhoto() {
+  if (!controlMode) return;
+  await reconcileManualPhotoStatus();
+}
+
+async function submitManualPhoto(event) {
+  event.preventDefault();
+  if (!controlMode || manualPhotoBusy) return;
+  setManualPhotoBusy(true);
+  ui.manualPhotoStatus.hidden = false;
+  ui.manualPhotoStatus.replaceChildren(element("strong", "", "正在確認粉專來源並加入照片…"));
+  try {
+    const { response, data } = await manualRequest("/api/manual-photo?ctrl=1", {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: ui.manualPhotoUrl.value }),
+    });
+    if (response.status === 409 && data.status) {
+      applyManualPhotoStatus(data.status);
+      return;
+    }
+    if (!response.ok) {
+      setManualPhotoBusy(false);
+      ui.manualPhotoStatus.replaceChildren(element("strong", "", typeof data.error === "string" ? data.error : "無法手動加入照片，請確認網址後重試。"));
+      return;
+    }
+    applyManualPhotoStatus(data);
+  } catch {
+    ui.manualPhotoStatus.replaceChildren(element("strong", "", "暫時無法確認手動加入是否已開始，正在重新連線。"));
+    manualPhotoPollTimer = setTimeout(reconcileManualPhotoStatus, 900);
+  }
+}
+
 document.querySelectorAll("[data-filter]").forEach(button => button.addEventListener("click", () => { setFilter(button.dataset.filter); render(); }));
 ui.date.addEventListener("change", render);
 ui.refresh.addEventListener("click", loadGallery);
@@ -754,5 +839,7 @@ ui.fetchPreset.addEventListener("change", selectFetchPreset);
   updateFetchRange();
 }));
 ui.fetchForm.addEventListener("submit", submitManualFetch);
+ui.manualPhotoForm.addEventListener("submit", submitManualPhoto);
 loadGallery();
 initializeManualFetch();
+initializeManualPhoto();

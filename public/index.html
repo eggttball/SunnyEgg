@@ -40,6 +40,15 @@
             <p id="fetch-range-summary" class="schedule-note">正在確認可抓取的日期…</p>
             <div id="manual-fetch-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true"><strong>正在確認抓取狀態…</strong></div>
           </form>
+          <form id="manual-photo-form" class="manual-fetch manual-photo-form" aria-labelledby="manual-photo-title" data-control-only="" hidden>
+            <h3 id="manual-photo-title">手動加入 Facebook 照片</h3>
+            <p class="schedule-note">貼上小鹿托嬰中心的 Facebook 照片頁連結；系統會驗證來源，直接加入相簿，不執行辨識或按讚。</p>
+            <div class="manual-photo-controls">
+              <div class="fetch-field"><label for="manual-photo-url">Facebook 照片網址</label><input id="manual-photo-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://www.facebook.com/photo/?fbid=…" required></div>
+              <button id="manual-photo-submit" class="button fetch-button" type="submit">手動加入照片</button>
+            </div>
+            <div id="manual-photo-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+          </form>
         </section>
         <section class="audit-section" aria-labelledby="post-audits-title" data-control-only="" hidden>
           <h2 id="post-audits-title">逐篇照片檢查</h2>

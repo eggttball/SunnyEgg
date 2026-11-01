@@ -4,6 +4,7 @@ import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { dirname, extname, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createManualFetchController, ManualFetchError } from './scripts/manual-fetch.mjs';
+import { createManualPhotoController, ManualPhotoError } from './scripts/manual-photo.mjs';
 import { createPhotoFeedbackRunner, PhotoFeedbackError, safePhotoFeedbackResult, validatePhotoFeedback } from './scripts/photo-feedback.mjs';
 
 const PROJECT_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -98,6 +99,7 @@ async function gallery(root) {
 
 export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, photoFeedbackRunner = createPhotoFeedbackRunner({ root }), clock } = {}) {
   const manualFetch = createManualFetchController({ root, runner: manualFetchRunner, clock });
+  const manualPhoto = createManualPhotoController({ root, clock });
   return async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -109,6 +111,7 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
     let pathname;
     try {
       pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      const requestUrl = new URL(req.url, 'http://localhost');
       if (pathname === '/api/photo-feedback') {
         if (req.method !== 'POST') return json(res, 405, { error: '不支援此操作' });
         if (req.headers.origin !== `http://${req.headers.host}` ||
@@ -131,6 +134,27 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
         }
         const input = await readJsonBody(req);
         return json(res, 202, manualFetch.start(input));
+      }
+      if (['/api/manual-photo', '/api/manual-photo/status'].includes(pathname)) {
+        if (requestUrl.searchParams.getAll('ctrl').length !== 1 || requestUrl.searchParams.get('ctrl') !== '1') {
+          return json(res, 404, { error: '找不到內容' });
+        }
+        if (pathname === '/api/manual-photo/status' || req.method === 'GET' || req.method === 'HEAD') {
+          if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, { error: '不支援此操作' });
+          if (req.method === 'HEAD') { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); return res.end(); }
+          return json(res, 200, manualPhoto.getStatus());
+        }
+        if (req.method === 'POST') {
+          if (req.headers.origin !== `http://${req.headers.host}` ||
+              (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site']))) {
+            return json(res, 403, { error: '只接受同來源的本機請求。' });
+          }
+          if (!/^application\/json(?:\s*;|\s*$)/i.test(req.headers['content-type'] || '')) {
+            return json(res, 415, { error: '請使用 JSON 照片資料。' });
+          }
+          return json(res, 202, manualPhoto.start(await readJsonBody(req, '請提供有效的 Facebook 照片頁網址。')));
+        }
+        return json(res, 405, { error: '不支援此操作' });
       }
       if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, { error: '不支援此操作' });
       if (['/api/manual-fetch/options', '/api/manual-fetch/status'].includes(pathname)) {
@@ -175,12 +199,16 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
     } catch (error) {
       if (res.headersSent) return res.destroy();
       if (error instanceof PhotoFeedbackError) return json(res, error.statusCode, { error: error.message });
+      if (error instanceof ManualPhotoError) {
+        return json(res, error.statusCode, { error: error.message, ...(error.statusCode === 409 ? { status: manualPhoto.getStatus() } : {}) });
+      }
       if (error instanceof ManualFetchError) {
         return json(res, error.statusCode, { error: error.message, ...(error.statusCode === 409 ? { status: manualFetch.getStatus() } : {}) });
       }
       if (['/api/manual-fetch', '/api/manual-fetch/options', '/api/manual-fetch/status'].includes(pathname)) {
         return json(res, 500, { error: '手動照片工作暫時無法使用，請稍後重試。' });
       }
+      if (['/api/manual-photo', '/api/manual-photo/status'].includes(pathname)) return json(res, 500, { error: '手動加入照片暫時無法使用，請稍後重試。' });
       if (pathname === '/api/photo-feedback') return json(res, 503, { error: '照片標記尚未確認保存，請重新讀取後重試。' });
       const code = ['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code) ? 404 : error instanceof URIError ? 400 : 500;
       json(res, code, { error: code === 500 ? '相簿資料讀取失敗，請檢查 data/manifest.json' : '找不到內容' });
