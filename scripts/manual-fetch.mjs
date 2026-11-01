@@ -13,7 +13,7 @@ const COUNT_FIELDS = [
   'unprocessedObservations',
 ];
 const TERMINAL_STATES = new Set(['complete', 'partial', 'blocked', 'failed']);
-const PROGRESS_PHASES = new Set(['preparing', 'scanning', 'resolving', 'downloading', 'recognizing', 'saving', 'finalizing']);
+const PROGRESS_PHASES = new Set(['preparing', 'opening_post', 'scanning', 'resolving', 'downloading', 'recognizing', 'saving', 'finalizing']);
 const MESSAGES = {
   idle: '尚未啟動手動抓取。',
   running: '正在抓取照片並進行本機比對，請稍候。',
@@ -49,6 +49,9 @@ const MESSAGES = {
   remote_failure: 'Facebook 讀取失敗，請稍後重試。',
   local_storage: '本機照片資料儲存失敗，請確認可用空間與權限。',
   reaction_failure: '候選照片已保存，但照片按讚尚未確認成功。',
+  invalid_post_url: '請貼上小鹿托嬰中心 Facebook 的貼文網址。',
+  post_unavailable: '指定貼文無法載入，或頁面尚未登入可查看。',
+  post_no_photos: '指定貼文沒有可辨識的照片。',
 };
 
 export class ManualFetchError extends Error {
@@ -108,6 +111,34 @@ export function validateRange(input, now = new Date()) {
   return { startDate: input.startDate, endDate: input.endDate, timeZone: TIME_ZONE };
 }
 
+export function normalizePostUrl(value) {
+  if (typeof value !== 'string' || value.length > 4096 || value.trim() !== value) {
+    throw new ManualFetchError(400, MESSAGES.invalid_post_url);
+  }
+  let url;
+  try { url = new URL(value); }
+  catch { throw new ManualFetchError(400, MESSAGES.invalid_post_url); }
+  if (url.protocol !== 'https:' || !['facebook.com', 'www.facebook.com', 'm.facebook.com'].includes(url.hostname) ||
+      url.username || url.password || url.port || url.hash ||
+      [...url.searchParams.keys()].some(key => /^(?:access_token|appsecret_proof|oauth_token|token|authorization)$/i.test(key))) {
+    throw new ManualFetchError(400, MESSAGES.invalid_post_url);
+  }
+  if (['/permalink.php', '/story.php'].includes(url.pathname)) {
+    const storyIds = url.searchParams.getAll('story_fbid'), pageIds = url.searchParams.getAll('id');
+    if (storyIds.length !== 1 || pageIds.length !== 1 || !/^[A-Za-z0-9_.:-]{1,200}$/.test(storyIds[0]) || !/^\d+$/.test(pageIds[0])) {
+      throw new ManualFetchError(400, MESSAGES.invalid_post_url);
+    }
+    return `https://www.facebook.com${url.pathname}?${new URLSearchParams({ story_fbid: storyIds[0], id: pageIds[0] })}`;
+  }
+  if (/^\/(?:[^/]+\/)?posts\/[A-Za-z0-9_.:-]+\/?$/.test(url.pathname)) {
+    return `https://www.facebook.com${url.pathname.replace(/\/$/, '')}`;
+  }
+  if (/^\/share\/p\/[A-Za-z0-9_.:-]+\/?$/.test(url.pathname)) {
+    return `https://www.facebook.com${url.pathname.replace(/\/$/, '')}`;
+  }
+  throw new ManualFetchError(400, MESSAGES.invalid_post_url);
+}
+
 function safeResult(report) {
   if (!report || typeof report !== 'object' || !TERMINAL_STATES.has(report.state)) throw new Error('Invalid job result');
   const counts = {};
@@ -133,37 +164,48 @@ function safeProgress(value) {
 export function createManualFetchController({ root, runner = createManualFetchRunner({ root }), clock = () => new Date() }) {
   let status = { state: 'idle', message: MESSAGES.idle };
   const getStatus = () => structuredClone(status);
+  const launch = (now, { range, postUrl }) => {
+    const accepted = { state: 'running', ...(range ? { range } : { targetType: 'post' }),
+      startedAt: now.toISOString(), message: MESSAGES.running,
+      runId: 'manual-' + randomUUID(), progress: { phase: 'preparing' } };
+    status = accepted;
+    const runnerInput = { ...(range || { postUrl }), runId: accepted.runId };
+    Object.defineProperty(runnerInput, 'onProgress', { value: value => {
+      const progress = safeProgress(value);
+      if (progress && status.state === 'running' && status.runId === accepted.runId) status = { ...status, progress };
+    } });
+    Promise.resolve().then(() => runner(runnerInput)).then(report => {
+      const { progress, ...terminal } = accepted;
+      status = { ...terminal, ...safeResult(report), finishedAt: clock().toISOString() };
+    }).catch(() => {
+      const { progress, ...terminal } = accepted;
+      status = { ...terminal, state: 'failed', message: MESSAGES.failed, finishedAt: clock().toISOString() };
+    });
+    return getStatus();
+  };
   return {
     getOptions: () => createOptions(clock()),
     getStatus,
     start(input) {
       if (status.state === 'running') throw new ManualFetchError(409, '已有手動照片工作執行中，請等待完成。');
       const now = clock();
-      const range = validateRange(input, now);
-      status = { state: 'running', range, startedAt: now.toISOString(), message: MESSAGES.running,
-        runId: 'manual-' + randomUUID(), progress: { phase: 'preparing' } };
-      const accepted = getStatus();
-      const runnerInput = { ...range, runId: accepted.runId };
-      Object.defineProperty(runnerInput, 'onProgress', { value: value => {
-        const progress = safeProgress(value);
-        if (progress && status.state === 'running' && status.runId === accepted.runId) status = { ...status, progress };
-      } });
-      Promise.resolve().then(() => runner(runnerInput)).then(report => {
-        const { progress, ...terminal } = accepted;
-        status = { ...terminal, ...safeResult(report), finishedAt: clock().toISOString() };
-      }).catch(() => {
-        const { progress, ...terminal } = accepted;
-        status = { ...terminal, state: 'failed', message: MESSAGES.failed, finishedAt: clock().toISOString() };
-      });
-      return accepted;
+      return launch(now, { range: validateRange(input, now), postUrl: null });
+    },
+    startPost(input) {
+      if (status.state === 'running') throw new ManualFetchError(409, '已有手動照片工作執行中，請等待完成。');
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'url')) {
+        throw new ManualFetchError(400, MESSAGES.invalid_post_url);
+      }
+      return launch(clock(), { range: null, postUrl: normalizePostUrl(input.url) });
     },
   };
 }
 
 export function createManualFetchRunner({ root }) {
   const projectRoot = resolve(root);
-  return async ({ startDate, endDate, onProgress }) => {
-    if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) throw new Error('Invalid date range');
+  return async ({ startDate, endDate, postUrl, onProgress }) => {
+    if (postUrl !== undefined) postUrl = normalizePostUrl(postUrl);
+    else if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) throw new Error('Invalid date range');
     const venvPython = resolve(projectRoot, '.venv/bin/python');
     const executable = await access(venvPython, constants.X_OK).then(() => venvPython, () => 'python3');
     const progressEnabled = typeof onProgress === 'function';
@@ -174,8 +216,9 @@ export function createManualFetchRunner({ root }) {
     const args = [
       resolve(projectRoot, 'scripts/daily.py'), '--root', projectRoot,
       '--env-file', resolve(projectRoot, '.env'),
-      '--start-date', startDate, '--end-date', endDate, '--max-scrolls', '100',
     ];
+    if (postUrl !== undefined) args.push('--post-url', postUrl);
+    else args.push('--start-date', startDate, '--end-date', endDate, '--max-scrolls', '100');
     if (progressId) args.push('--progress-id', progressId);
     return new Promise((resolveReport, reject) => {
       const child = spawn(executable, args, { cwd: projectRoot, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });

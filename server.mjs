@@ -135,6 +135,19 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
         const input = await readJsonBody(req);
         return json(res, 202, manualFetch.start(input));
       }
+      if (pathname === '/api/manual-fetch/post' && req.method === 'POST') {
+        if (requestUrl.searchParams.getAll('ctrl').length !== 1 || requestUrl.searchParams.get('ctrl') !== '1') {
+          return json(res, 404, { error: '找不到內容' });
+        }
+        if (req.headers.origin !== `http://${req.headers.host}` ||
+            (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site']))) {
+          return json(res, 403, { error: '只接受同來源的本機請求。' });
+        }
+        if (!/^application\/json(?:\s*;|\s*$)/i.test(req.headers['content-type'] || '')) {
+          return json(res, 415, { error: '請使用 JSON 貼文網址資料。' });
+        }
+        return json(res, 202, manualFetch.startPost(await readJsonBody(req, '請提供有效的 Facebook 貼文網址。')));
+      }
       if (['/api/manual-photo', '/api/manual-photo/status'].includes(pathname)) {
         if (requestUrl.searchParams.getAll('ctrl').length !== 1 || requestUrl.searchParams.get('ctrl') !== '1') {
           return json(res, 404, { error: '找不到內容' });
@@ -205,7 +218,7 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
       if (error instanceof ManualFetchError) {
         return json(res, error.statusCode, { error: error.message, ...(error.statusCode === 409 ? { status: manualFetch.getStatus() } : {}) });
       }
-      if (['/api/manual-fetch', '/api/manual-fetch/options', '/api/manual-fetch/status'].includes(pathname)) {
+      if (['/api/manual-fetch', '/api/manual-fetch/post', '/api/manual-fetch/options', '/api/manual-fetch/status'].includes(pathname)) {
         return json(res, 500, { error: '手動照片工作暫時無法使用，請稍後重試。' });
       }
       if (['/api/manual-photo', '/api/manual-photo/status'].includes(pathname)) return json(res, 500, { error: '手動加入照片暫時無法使用，請稍後重試。' });

@@ -27,7 +27,7 @@ After signing in, close the dedicated browser window. Start the gallery with:
 npm start
 ```
 
-Open <http://127.0.0.1:4173/>. The `?ctrl=1` view shows the local controls for manual fetches and photo feedback.
+Open <http://127.0.0.1:4173/>. The `?ctrl=1` view shows the local controls for date-range or direct-post fetches and photo feedback.
 
 ## Daily processing
 

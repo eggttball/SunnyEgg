@@ -20,6 +20,9 @@ const MESSAGES = {
   login_cancelled:'登入頁面載入完成前瀏覽器已關閉；請重新執行登入。',
   invalid_arguments:'瀏覽器指令或參數無效；請確認指令、設定檔與網址。',
   browser_unavailable:'專用瀏覽器操作尚未完成；請確認本機瀏覽器設定後重試。',
+  login_required:'專用瀏覽器登入已失效，請重新登入 Facebook。',
+  post_unavailable:'指定貼文無法載入，或頁面尚未登入可查看。',
+  post_no_photos:'指定貼文沒有可辨識的照片。',
 };
 
 class CollectorError extends Error {
@@ -38,6 +41,30 @@ export function normalizePhotoLink(value) {
     if (!/^\d+$/.test(photoId || '')) return null;
     return match ? {photoId, albumPostId:match[1], sourceUrl:`https://www.facebook.com/photo/?fbid=${photoId}&set=pcb.${match[1]}`} :
       {photoId,sourceUrl:`https://www.facebook.com/photo/?fbid=${photoId}`};
+  } catch { return null; }
+}
+
+export function normalizePostLink(value) {
+  try {
+    if (typeof value !== 'string' || /[\\\s]/.test(value)) return null;
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !['facebook.com','www.facebook.com','m.facebook.com'].includes(url.hostname) ||
+        url.username || url.password || url.port || url.hash || [...url.searchParams.keys()].some(key => SECRET.test(key))) return null;
+    if (url.pathname === '/permalink.php' || url.pathname === '/story.php') {
+      const storyIds = url.searchParams.getAll('story_fbid'), pageIds = url.searchParams.getAll('id');
+      if (storyIds.length !== 1 || pageIds.length !== 1 || !/^[A-Za-z0-9_.:-]{1,200}$/.test(storyIds[0]) || !/^\d+$/.test(pageIds[0])) return null;
+      return {url:`https://www.facebook.com${url.pathname}?${new URLSearchParams({story_fbid:storyIds[0],id:pageIds[0]})}`,
+        path:url.pathname, storyId:storyIds[0], pageId:pageIds[0]};
+    }
+    if (/^\/(?:[^/]+\/)?posts\/[A-Za-z0-9_.:-]+\/?$/.test(url.pathname)) {
+      const path=url.pathname.replace(/\/$/,'');
+      return {url:`https://www.facebook.com${path}`,path};
+    }
+    if (/^\/share\/p\/[A-Za-z0-9_.:-]+\/?$/.test(url.pathname)) {
+      const path=url.pathname.replace(/\/$/,'');
+      return {url:`https://www.facebook.com${path}`,path,share:true};
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -240,6 +267,79 @@ async function discover(profile, maxScrolls, loadPlaywright, progressId=null) {
   } finally {await context.close();}
 }
 
+async function inspectPost(profile,value,loadPlaywright) {
+  const target=normalizePostLink(value);
+  if(!target) throw new CollectorError('invalid_arguments');
+  const context=await contextFor(profile,false,loadPlaywright);
+  const capturedAt=new Date().toISOString();
+  try {
+    const page=context.pages()[0] || await context.newPage();
+    await navigate(page,target.url);
+    await page.waitForFunction(()=>document.querySelector('input[name="email"],input[name="pass"],'+
+      '[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"],'+
+      '[role="article"],[data-pagelet^="FeedUnit"]'),null,{timeout:12000}).catch(()=>{});
+    const observed=await page.evaluate(expected=>{
+      const text=document.body.innerText.slice(0,6000);
+      const main=document.querySelector('[role="main"]') || document.body;
+      const articles=[...main.querySelectorAll('[role="article"],[data-pagelet^="FeedUnit"]')];
+      let effective=expected;
+      if(expected.share) {
+        try {
+          const resolved=new URL(location.href);
+          const storyId=resolved.searchParams.get('story_fbid'),pageId=resolved.searchParams.get('id');
+          effective=storyId && pageId ? {storyId,pageId} : {path:resolved.pathname.replace(/\/$/,'')};
+        } catch {}
+      }
+      const sameTarget=href=>{
+        try {
+          const link=new URL(href,location.href);
+          if(link.hostname!=='www.facebook.com' && link.hostname!=='facebook.com' && link.hostname!=='m.facebook.com') return false;
+          if(effective.storyId) return ['permalink.php','story.php'].includes(link.pathname.slice(1)) &&
+            link.searchParams.get('story_fbid')===effective.storyId && link.searchParams.get('id')===effective.pageId ||
+            /\/posts\/([^/]+)\/?$/.test(link.pathname) &&
+            decodeURIComponent(link.pathname.match(/\/posts\/([^/]+)\/?$/)[1])===effective.storyId;
+          return link.pathname.replace(/\/$/,'')===(effective.path || expected.path);
+        } catch {return false;}
+      };
+      let currentIsTarget=false;
+      try {
+        const current=new URL(location.href);
+        if(expected.share) {
+          currentIsTarget=/\/posts\/[^/]+\/?$/.test(current.pathname) ||
+            ['/permalink.php','/story.php'].includes(current.pathname);
+        } else if(expected.storyId) {
+          currentIsTarget=(['/permalink.php','/story.php'].includes(current.pathname) &&
+            current.searchParams.get('story_fbid')===expected.storyId && current.searchParams.get('id')===expected.pageId) ||
+            decodeURIComponent(current.pathname.match(/\/posts\/([^/]+)\/?$/)?.[1] || '')===expected.storyId;
+        } else currentIsTarget=current.pathname.replace(/\/$/,'')===expected.path;
+      } catch {}
+      const article=articles.find(node=>[...node.querySelectorAll('a[href]')].some(link=>sameTarget(link.href))) ||
+        (currentIsTarget ? articles[0] || null : null);
+      const scope=article || main;
+      const photos=[];
+      for(const link of scope.querySelectorAll('a[href]')) {
+        try {
+          const url=new URL(link.href);
+          if(!['www.facebook.com','facebook.com','m.facebook.com'].includes(url.hostname) ||
+              !['/photo/','/photo','/photo.php'].includes(url.pathname)) continue;
+          const ids=url.searchParams.getAll('fbid');
+          if(ids.length===1 && /^\d+$/.test(ids[0])) photos.push({photoId:ids[0],href:url.href});
+        } catch {}
+      }
+      const unique=[...new Map(photos.map(photo=>[photo.photoId,photo])).values()];
+      return {loginForm:!!document.querySelector('input[name="email"],input[name="pass"]'),
+        authenticated:!!document.querySelector('[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"]'),
+        unavailable:/內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text),
+        articleFound:!!article,photos:unique,videoCount:scope.querySelectorAll('video').length};
+    },target);
+    if(observed.loginForm || !observed.authenticated) throw new CollectorError('login_required');
+    if(observed.unavailable || !observed.articleFound) throw new CollectorError('post_unavailable');
+    if(!observed.photos.length) throw new CollectorError('post_no_photos');
+    return {version:1,state:'complete',capturedAt,posts:[{kind:'photos',photoId:observed.photos[0].photoId,
+      sourceUrl:observed.photos[0].href}],skippedVideos:observed.videoCount};
+  } finally {await context.close();}
+}
+
 async function react(profile,value,loadPlaywright) {
   let url;
   try {url=new URL(value);}
@@ -365,8 +465,9 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
   const command=args.shift();
   const options={};
   while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id','--progress-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
-  if(!['login','discover','react','react-photo'].includes(command) || !options['--profile'] ||
+  if(!['login','discover','inspect-post','react','react-photo'].includes(command) || !options['--profile'] ||
       (command!=='react-photo' && Object.hasOwn(options,'--photo-id')) ||
+      (!['discover','inspect-post'].includes(command) && Object.hasOwn(options,'--url')) ||
       (command!=='discover' && Object.hasOwn(options,'--progress-id')) ||
       (Object.hasOwn(options,'--progress-id') && !PROGRESS_ID.test(options['--progress-id']))) throw new CollectorError('invalid_arguments');
   if(command==='react-photo') {
@@ -419,6 +520,7 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
     if(!Number.isInteger(max) || max<1 || max>100) throw new CollectorError('invalid_arguments');
     return discover(options['--profile'],max,loadPlaywright,options['--progress-id'] || null);
   }
+  if(command==='inspect-post' && options['--url']) return inspectPost(options['--profile'],options['--url'],loadPlaywright);
   if(command==='react' && options['--url']) return react(options['--profile'],options['--url'],loadPlaywright);
   throw new CollectorError('invalid_arguments');
 }

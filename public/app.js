@@ -17,6 +17,9 @@ const ui = {
   fetchRange: document.querySelector("#fetch-range-summary"),
   fetchSubmit: document.querySelector("#manual-fetch-submit"),
   manualStatus: document.querySelector("#manual-fetch-status"),
+  manualPostForm: document.querySelector("#manual-post-form"),
+  manualPostUrl: document.querySelector("#manual-post-url"),
+  manualPostSubmit: document.querySelector("#manual-post-submit"),
   manualPhotoForm: document.querySelector("#manual-photo-form"),
   manualPhotoUrl: document.querySelector("#manual-photo-url"),
   manualPhotoSubmit: document.querySelector("#manual-photo-submit"),
@@ -403,9 +406,12 @@ function updatePostAudits() {
     return;
   }
   const discoveryIncomplete = status.discovery?.state === "partial" || ["scan_limit", "feed_stalled", "missing_date"].includes(status.reason);
-  ui.postAudits.append(element("p", "audit-note", discoveryIncomplete
-    ? "貼文列表掃描尚未完整，所選日期範圍尚未完整。逐篇照片比對完成不代表已取得範圍內所有貼文。"
-    : "以下紀錄列出本次取得的貼文；逐篇照片比對完成不代表已取得日期範圍內所有貼文。"));
+  const auditNote = status.discoveryMode === "direct_post"
+    ? "以下是指定貼文的照片檢查紀錄；本次沒有掃描粉專動態列表。"
+    : discoveryIncomplete
+      ? "貼文列表掃描尚未完整，所選日期範圍尚未完整。逐篇照片比對完成不代表已取得範圍內所有貼文。"
+      : "以下紀錄列出本次取得的貼文；逐篇照片比對完成不代表已取得日期範圍內所有貼文。";
+  ui.postAudits.append(element("p", "audit-note", auditNote));
   const wrapper = element("div", "audit-table-scroll");
   wrapper.setAttribute("tabindex", "0");
   wrapper.setAttribute("role", "region");
@@ -464,7 +470,7 @@ function updateJobStatus() {
   if (ui.jobStatus.hidden) return;
   const states = { complete: "最近一次流程已完成", partial: "最近一次流程部分完成", blocked: "最近一次流程受阻", failed: "最近一次流程失敗", error: "最近一次流程失敗", running: "照片流程進行中", idle: "等待每日照片流程", skipped: "最近一次流程已略過", locked: "已有照片流程正在執行" };
   ui.jobStatus.append(element("strong", "", states[status.state] || "每日照片流程狀態"));
-  const mode = status.discoveryMode === "replay" ? "觀察紀錄重播" : status.discoveryMode === "live" ? "即時瀏覽器掃描" : "發現方式未提供";
+  const mode = status.discoveryMode === "direct_post" ? "指定貼文直取" : status.discoveryMode === "replay" ? "觀察紀錄重播" : status.discoveryMode === "live" ? "即時瀏覽器掃描" : "發現方式未提供";
   ui.jobStatus.append(element("p", "job-mode", `${status.simulated === true ? "模擬執行" : "正式執行"} · ${mode}`));
   appendRunCounts(ui.jobStatus, status);
   if (typeof status.message === "string" && status.message) ui.jobStatus.append(element("p", "", status.message));
@@ -536,6 +542,10 @@ function setManualBusy(busy) {
   const disabled = busy || !manualOptions;
   ui.fetchControls.disabled = disabled;
   [ui.fetchPreset, ui.fetchStart, ui.fetchEnd, ui.fetchSubmit].forEach(control => { control.disabled = disabled; });
+  ui.manualPostUrl.disabled = busy;
+  ui.manualPostSubmit.disabled = busy;
+  ui.manualPostSubmit.textContent = busy ? "抓取進行中…" : "抓取指定貼文";
+  ui.manualPostForm.setAttribute("aria-busy", String(busy));
   ui.fetchForm.setAttribute("aria-busy", String(busy));
   ui.fetchSubmit.textContent = busy ? (manualRun?.state === "running" ? "抓取進行中…" : "確認抓取狀態…") : "立即抓取貼文";
 }
@@ -579,6 +589,7 @@ function appendManualProgress(container, status) {
   if (status.state !== "running" || !progress || typeof progress !== "object") return;
   const titles = {
     preparing: "準備本機辨識",
+    opening_post: "開啟指定貼文",
     scanning: "掃描貼文列表",
     resolving: "讀取貼文資訊",
     downloading: "下載照片",
@@ -593,7 +604,8 @@ function appendManualProgress(container, status) {
   panel.append(element("strong", "fetch-progress-title", title));
 
   let detail = "工作正在進行，請稍候。";
-  if (progress.phase === "scanning" && validCount(progress.scrolls) && validCount(progress.scrollLimit)) {
+  if (progress.phase === "opening_post") detail = "直接載入該貼文，不掃描動態列表。";
+  else if (progress.phase === "scanning" && validCount(progress.scrolls) && validCount(progress.scrollLimit)) {
     detail = `已捲動 ${progress.scrolls}/${progress.scrollLimit} 次 · 發現 ${validCount(progress.discoveredPosts) ? progress.discoveredPosts : 0} 篇照片貼文`;
   } else if (validCount(progress.totalPosts) && progress.totalPosts > 0) {
     const completed = Math.min(validCount(progress.completedPosts) ? progress.completedPosts : 0, progress.totalPosts);
@@ -611,7 +623,7 @@ function appendManualProgress(container, status) {
   track.setAttribute("role", "progressbar");
   track.setAttribute("aria-label", "貼文抓取進度");
   const fill = element("div", "fetch-progress-fill");
-  if (progress.phase === "scanning" || progress.phase === "preparing" || !validCount(progress.totalPosts) || progress.totalPosts === 0) {
+  if (["scanning", "preparing", "opening_post"].includes(progress.phase) || !validCount(progress.totalPosts) || progress.totalPosts === 0) {
     track.setAttribute("aria-valuetext", "進行中");
     fill.classList.add("indeterminate");
   } else {
@@ -649,7 +661,7 @@ function applyManualStatus(status, refreshGallery = true) {
     ui.manualStatus.append(element("strong", "", labels[status.state]));
     if (status.range && /^\d{4}-\d{2}-\d{2}$/.test(status.range.startDate) && /^\d{4}-\d{2}-\d{2}$/.test(status.range.endDate)) {
       ui.manualStatus.append(element("p", "", `${status.range.startDate} 至 ${status.range.endDate}（台灣時間，含起訖日）`));
-    }
+    } else if (status.targetType === "post") ui.manualStatus.append(element("p", "", "直接處理指定貼文；不掃描動態列表。"));
     if (typeof status.message === "string" && status.message) ui.manualStatus.append(element("p", "", status.message));
     appendManualProgress(ui.manualStatus, status);
     appendRunCounts(ui.manualStatus, status);
@@ -704,6 +716,7 @@ async function initializeManualFetch() {
         setManualBusy(manualBusy);
       } catch {
         manualOptionsFailed = true;
+        setManualBusy(manualRun?.state === "running");
         if (manualRun && manualRun.state !== "idle") ui.manualStatus.append(element("p", "", "無法讀取抓取設定，請重新整理頁面後再試。"));
         else showManualMessage("無法讀取抓取設定，請重新整理頁面後再試。");
       }
@@ -748,6 +761,34 @@ async function submitManualFetch(event) {
   } catch {
     setManualBusy(true);
     showManualMessage("暫時無法確認抓取是否已開始，正在重新連線。請稍候。");
+    scheduleManualPoll();
+  }
+}
+
+async function submitManualPost(event) {
+  event.preventDefault();
+  if (manualBusy || !controlMode || !ui.manualPostForm.reportValidity()) return;
+  setManualBusy(true);
+  ui.manualPostSubmit.textContent = "正在送出…";
+  showManualMessage("正在開啟指定貼文，不會掃描動態列表…");
+  try {
+    const { response, data } = await manualRequest("/api/manual-fetch/post?ctrl=1", {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: ui.manualPostUrl.value }),
+    });
+    if (response.status === 409 && data.status) {
+      applyManualStatus(data.status);
+      return;
+    }
+    if (!response.ok) {
+      setManualBusy(false);
+      showManualMessage(typeof data.error === "string" ? data.error : "無法開始指定貼文抓取，請確認網址後重試。");
+      return;
+    }
+    applyManualStatus(data);
+  } catch {
+    setManualBusy(true);
+    showManualMessage("暫時無法確認指定貼文抓取是否已開始，正在重新連線。請稍候。");
     scheduleManualPoll();
   }
 }
@@ -839,6 +880,7 @@ ui.fetchPreset.addEventListener("change", selectFetchPreset);
   updateFetchRange();
 }));
 ui.fetchForm.addEventListener("submit", submitManualFetch);
+ui.manualPostForm.addEventListener("submit", submitManualPost);
 ui.manualPhotoForm.addEventListener("submit", submitManualPhoto);
 loadGallery();
 initializeManualFetch();

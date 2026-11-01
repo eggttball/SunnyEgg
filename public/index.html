@@ -38,7 +38,14 @@
               <button id="manual-fetch-submit" class="button fetch-button" type="submit">立即抓取貼文</button>
             </fieldset>
             <p id="fetch-range-summary" class="schedule-note">正在確認可抓取的日期…</p>
-            <div id="manual-fetch-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true"><strong>正在確認抓取狀態…</strong></div>
+          </form>
+          <form id="manual-post-form" class="manual-fetch manual-post-form" aria-labelledby="manual-post-title" aria-busy="false" data-control-only="" hidden>
+            <h3 id="manual-post-title">直接抓取指定貼文</h3>
+            <p class="schedule-note">貼上小鹿托嬰中心的 Facebook 貼文網址。只載入這則貼文、不掃描動態；下載照片做辨識，略過影片。候選照片仍依目前的自動按讚設定處理。</p>
+            <div class="manual-post-controls">
+              <div class="fetch-field"><label for="manual-post-url">Facebook 貼文網址</label><input id="manual-post-url" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://www.facebook.com/permalink.php?story_fbid=…&amp;id=…" required></div>
+              <button id="manual-post-submit" class="button fetch-button" type="submit">抓取指定貼文</button>
+            </div>
           </form>
           <form id="manual-photo-form" class="manual-fetch manual-photo-form" aria-labelledby="manual-photo-title" data-control-only="" hidden>
             <h3 id="manual-photo-title">手動加入 Facebook 照片</h3>
@@ -49,6 +56,7 @@
             </div>
             <div id="manual-photo-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true" hidden></div>
           </form>
+          <div id="manual-fetch-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true" data-control-only="" hidden><strong>正在確認抓取狀態…</strong></div>
         </section>
         <section class="audit-section" aria-labelledby="post-audits-title" data-control-only="" hidden>
           <h2 id="post-audits-title">逐篇照片檢查</h2>

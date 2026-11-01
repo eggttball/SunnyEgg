@@ -67,6 +67,9 @@ MESSAGES = {
     'pagination_cycle': '附件分頁循環；未匯入此貼文。',
     'wrong_page': '照片父貼文不屬於設定的粉專；未匯入。',
     'not_photos_only': '父貼文包含影片或不支援附件；未匯入。',
+    'post_unavailable': '指定貼文無法載入，或頁面尚未登入可查看。',
+    'post_no_photos': '指定貼文沒有可辨識的照片。',
+    'invalid_post_url': '請貼上小鹿托嬰中心 Facebook 的貼文網址。',
     'photo_unavailable': 'Facebook 未提供可下載的原生照片；未匯入。',
     'unsupported_media': '原生照片格式不受支援；未匯入。',
     'download_failure': '原生照片下載未完成；未匯入此貼文。',
@@ -79,6 +82,7 @@ BROWSER_ERROR_REASONS = {
     'browser_unavailable', 'browser_dependency_missing', 'browser_missing',
     'profile_missing', 'profile_unavailable', 'profile_in_use', 'browser_launch_failed',
     'facebook_navigation_failed', 'login_cancelled', 'invalid_arguments', 'login_required',
+    'post_unavailable', 'post_no_photos',
 }
 
 
@@ -136,6 +140,38 @@ def _source_url(value, reject_secrets=False):
     result = urlunsplit(('https', 'www.facebook.com', parts.path, urlencode(query), ''))
     media.validate_source_url(result)
     return result
+
+
+def _post_url(value, page):
+    if not isinstance(value, str):
+        raise DailyError('invalid_post_url')
+    try:
+        media.validate_source_url(value)
+        parts = urlsplit(value)
+        if parts.fragment:
+            raise ValueError()
+        if parts.path in {'/permalink.php', '/story.php'}:
+            query = parse_qsl(parts.query, keep_blank_values=True)
+            story_ids = [value for key, value in query if key == 'story_fbid']
+            page_ids = [value for key, value in query if key == 'id']
+            story_id = story_ids[0] if len(story_ids) == 1 else None
+            page_id = page_ids[0] if len(page_ids) == 1 else None
+            source_page_id = dict(parse_qsl(urlsplit(SOURCE_PAGE).query)).get('id')
+            allowed_page_ids = {page, source_page_id, VERIFIED_POST_PAGE_ALIASES.get(page)}
+            if (not isinstance(story_id, str) or re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', story_id) is None
+                    or not isinstance(page_id, str) or not page_id.isdigit() or page_id not in allowed_page_ids):
+                raise ValueError()
+            path = parts.path
+            query_string = urlencode({'story_fbid': story_id, 'id': page_id})
+        elif re.fullmatch(r'/(?:[^/]+/)?posts/[A-Za-z0-9_.:-]+/?', parts.path):
+            path, query_string = parts.path.rstrip('/'), ''
+        elif re.fullmatch(r'/share/p/[A-Za-z0-9_.:-]+/?', parts.path):
+            path, query_string = parts.path.rstrip('/'), ''
+        else:
+            raise ValueError()
+        return urlunsplit(('https', 'www.facebook.com', path, query_string, ''))
+    except (MediaError, ValueError, TypeError):
+        raise DailyError('invalid_post_url') from None
 
 
 def _read_json(path, limit=8 * 1024 * 1024):
@@ -277,12 +313,14 @@ def _safe_coverage(value):
     return result
 
 
-def _discovery(root, discovery_file, simulate, profile, max_scrolls, progress_id=None):
+def _discovery(root, discovery_file, simulate, profile, max_scrolls, progress_id=None, post_url=None):
     if simulate and discovery_file is None:
         raise DailyError('invalid_discovery')
     try:
         if discovery_file is not None:
             body = _read_json(Path(discovery_file))
+        elif post_url is not None:
+            body = _browser(root, 'inspect-post', profile, target=post_url)
         elif progress_id is None:
             body = _browser(root, 'discover', profile, max_scrolls=max_scrolls)
         else:
@@ -309,7 +347,8 @@ def _discovery(root, discovery_file, simulate, profile, max_scrolls, progress_id
         reason = body.get('reason')
         if reason not in MESSAGES:
             reason = 'browser_unavailable' if state == 'blocked' else 'scan_limit' if state == 'partial' else None
-        discovery = {'mode': 'replay' if discovery_file is not None else 'live', 'capturedAt': captured, 'state': state, 'reason': reason}
+        mode = 'replay' if discovery_file is not None else 'direct_post' if post_url is not None else 'live'
+        discovery = {'mode': mode, 'capturedAt': captured, 'state': state, 'reason': reason}
         coverage = _safe_coverage(body.get('coverage'))
         if coverage is not None:
             discovery['coverage'] = coverage
@@ -326,24 +365,27 @@ def _graph_object(identifier, fields, token, version):
     return facebook.graph_json('https://graph.facebook.com/{}/{}?{}'.format(version, identifier, urlencode({'fields': fields})), token)
 
 
-def _photo_ids(collection):
+def _photo_ids(collection, photos_only=False):
     items = facebook.complete_collection_data(collection)
-    if not isinstance(items, list) or not items:
+    if not isinstance(items, list) or (not items and not photos_only):
         raise DailyError('invalid_response')
     result = []
     for item in items:
         if not isinstance(item, dict):
             raise DailyError('invalid_response')
         if item.get('type') == 'album':
-            result.extend(_photo_ids(item.get('subattachments')))
+            result.extend(_photo_ids(item.get('subattachments'), photos_only=photos_only))
         elif item.get('type') == 'photo':
             identifier = item.get('target', {}).get('id') if isinstance(item.get('target'), dict) else None
             if not isinstance(identifier, str) or not re.fullmatch(r'[0-9]+', identifier):
                 raise DailyError('invalid_response')
             result.append(identifier)
-        else:
+        elif not photos_only:
             raise DailyError('not_photos_only')
-    return list(dict.fromkeys(result))
+    result = list(dict.fromkeys(result))
+    if photos_only and not result:
+        raise DailyError('post_no_photos')
+    return result
 
 
 def _attachment_evidence(collection):
@@ -376,7 +418,7 @@ def _post_metadata_hash(item):
     return hashlib.sha256(json.dumps(stable_metadata, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def resolve_photo_post(photo_id, token, version, page, allow_missing_date=False, date_window=None):
+def resolve_photo_post(photo_id, token, version, page, allow_missing_date=False, date_window=None, photos_only=False):
     """Validate parent metadata first, then resolve attachments for eligible posts."""
     bridge = _graph_object(photo_id, 'id,page_story_id', token, version)
     parent = bridge.get('page_story_id')
@@ -418,7 +460,7 @@ def resolve_photo_post(photo_id, token, version, page, allow_missing_date=False,
             item['attachments'] = {'state': 'not_checked', 'reason': exclusion}
             return item
     complete = facebook.complete_attachments(post.get('attachments'), token, version, MAX_ATTACHMENT_PAGES)
-    identifiers = _photo_ids(complete)
+    identifiers = _photo_ids(complete, photos_only=photos_only)
     if photo_id not in identifiers:
         raise DailyError('invalid_response')
     item['photoIds'] = identifiers
@@ -813,7 +855,7 @@ def _persist_report(root, report):
 
 
 def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env_file=None, now=None,
-              start_date=None, end_date=None, max_scrolls=None, force_recheck=False, progress_id=None):
+              start_date=None, end_date=None, max_scrolls=None, force_recheck=False, progress_id=None, post_url=None):
     """Run one serialized photo batch; replay still uses real API, downloads and matching."""
     root = Path(root).resolve()
     report = _report(now, simulate)
@@ -839,6 +881,12 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                 try:
                     token, version, page, profile, auto_like, configured_max_scrolls = _configuration(root, env_file)
                     reference_threshold_margin = recognize.load_reference_threshold_margin(root)
+                    if post_url is not None:
+                        if discovery_file is not None or simulate or window is not None:
+                            raise DailyError('invalid_post_url')
+                        post_url = _post_url(post_url, page)
+                except DailyError:
+                    raise
                 except (MediaError, OSError, ValueError, TypeError):
                     raise DailyError('configuration') from None
                 try:
@@ -871,14 +919,17 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                 except Exception:
                     raise DailyError('recognition_prerequisites') from None
                 effective_scroll_limit = configured_max_scrolls if max_scrolls is None else max_scrolls
-                _manual_progress(root, progress_id, 'scanning', scrolls=0, scrollLimit=effective_scroll_limit,
-                                 discoveredPosts=0)
+                if post_url is not None:
+                    _manual_progress(root, progress_id, 'opening_post', completedPosts=0, totalPosts=1)
+                else:
+                    _manual_progress(root, progress_id, 'scanning', scrolls=0, scrollLimit=effective_scroll_limit,
+                                     discoveredPosts=0)
                 if progress_id is None:
                     discovery, observations, skipped = _discovery(root, discovery_file, simulate, profile,
-                                                                  effective_scroll_limit)
+                                                                  effective_scroll_limit, post_url=post_url)
                 else:
                     discovery, observations, skipped = _discovery(root, discovery_file, simulate, profile,
-                                                                  effective_scroll_limit, progress_id)
+                                                                  effective_scroll_limit, progress_id, post_url)
                 report['discovery'] = discovery
                 report['counts']['skippedVideos'] = skipped
                 report['counts']['discoveredPosts'] = len(observations)
@@ -911,7 +962,8 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                     try:
                         _check_feedback_current(root, engine.negative_profile['fingerprint'])
                         item = resolve_photo_post(observation['photoId'], token, version, page,
-                                                  allow_missing_date=window is not None, date_window=window)
+                                                  allow_missing_date=window is not None, date_window=window,
+                                                  photos_only=post_url is not None)
                         parent = item['sourceId']
                         if parent in seen:
                             report['counts']['duplicatePosts'] += 1
@@ -1077,6 +1129,7 @@ def main(argv=None):
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--simulate', action='store_true', help='重播發現資料，仍以實際 API 下載辨識，不按讚')
     parser.add_argument('--discovery-file', type=Path)
+    parser.add_argument('--post-url', help='直接處理指定 Facebook 貼文，不掃描動態列表')
     parser.add_argument('--env-file', type=Path)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--force-recheck', action='store_true', help='重新下載並比對範圍內完整照片貼文，略過既有檢查快取')
@@ -1102,7 +1155,7 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     report = run_daily(arguments.root, arguments.discovery_file, arguments.simulate, arguments.threshold, arguments.env_file,
                        start_date=arguments.start_date, end_date=arguments.end_date, max_scrolls=arguments.max_scrolls,
-                       force_recheck=arguments.force_recheck, progress_id=arguments.progress_id)
+                       force_recheck=arguments.force_recheck, progress_id=arguments.progress_id, post_url=arguments.post_url)
     print(json.dumps(report, ensure_ascii=False, allow_nan=False))
     return 0 if report['state'] == 'complete' else 2 if report['state'] == 'partial' else 1
 
