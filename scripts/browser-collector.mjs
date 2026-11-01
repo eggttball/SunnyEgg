@@ -1,0 +1,409 @@
+#!/usr/bin/env node
+// Dedicated-profile browser discovery. Never exports authentication or raw page data.
+import { access, mkdir, lstat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const PAGE = 'https://www.facebook.com/profile.php?id=100063963161862';
+const SECRET = /^(?:access_token|appsecret_proof|oauth_token|token|authorization)$/i;
+const MESSAGES = {
+  browser_dependency_missing:'Playwright 尚未安裝；請在專案目錄執行 npm install。',
+  browser_missing:'Playwright Chromium 尚未安裝或無法執行；請執行 npx playwright install chromium。',
+  profile_missing:'專用瀏覽器設定檔尚未建立；請先執行本機瀏覽器登入。',
+  profile_unavailable:'專用瀏覽器設定檔無法安全使用；請確認目錄與讀寫權限。',
+  profile_in_use:'專用瀏覽器設定檔正在使用；請先關閉使用該設定檔的瀏覽器，再重試。',
+  browser_launch_failed:'專用瀏覽器無法啟動；請確認本機 Chromium 可執行後重試。',
+  facebook_navigation_failed:'Facebook 頁面無法載入；請確認網路連線後重試。',
+  login_cancelled:'登入頁面載入完成前瀏覽器已關閉；請重新執行登入。',
+  invalid_arguments:'瀏覽器指令或參數無效；請確認指令、設定檔與網址。',
+  browser_unavailable:'專用瀏覽器操作尚未完成；請確認本機瀏覽器設定後重試。',
+};
+
+class CollectorError extends Error {
+  constructor(reason) {super(MESSAGES[reason]);this.reason=reason;}
+}
+
+export function normalizePhotoLink(value) {
+  try {
+    if (typeof value !== 'string' || /[\\\s]/.test(value)) return null;
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !['facebook.com','www.facebook.com','m.facebook.com'].includes(url.hostname) || url.username || url.password || url.port) return null;
+    if ([...url.searchParams.keys()].some(key => SECRET.test(key))) return null;
+    if (!['/photo/','/photo','/photo.php'].includes(url.pathname)) return null;
+    const photoId = url.searchParams.get('fbid');
+    const match = /^pcb\.(\d+)$/.exec(url.searchParams.get('set') || '');
+    if (!/^\d+$/.test(photoId || '')) return null;
+    return match ? {photoId, albumPostId:match[1], sourceUrl:`https://www.facebook.com/photo/?fbid=${photoId}&set=pcb.${match[1]}`} :
+      {photoId,sourceUrl:`https://www.facebook.com/photo/?fbid=${photoId}`};
+  } catch { return null; }
+}
+
+export function collectObservations(observations) {
+  const posts = [], seen = new Set(), videoUrls = new Set();
+  for (const item of observations) {
+    if (!item || item.featured || item.pinned || item.inPost===false) continue;
+    if (item.video || /facebook\.com\/(?:reel\/|watch\/?\?|(?:[^/]+\/)?videos\/)/.test(item.href || '')) {
+      videoUrls.add(item.href); continue;
+    }
+    const photo = normalizePhotoLink(item.href);
+    const identity=photo && (photo.albumPostId || `photo:${photo.photoId}`);
+    if (!photo || seen.has(identity)) continue;
+    seen.add(identity);
+    posts.push({kind:'photos', ...photo});
+  }
+  return {posts, skippedVideos:videoUrls.size};
+}
+
+export function classifyPage({authenticated, loginForm, postSection, unavailable}) {
+  if (loginForm || !authenticated) return 'login_required';
+  if (unavailable) return 'page_unavailable';
+  return postSection ? null : 'feed_unavailable';
+}
+
+async function snapshot(page, scroll=false) {
+  return page.evaluate(shouldScroll => {
+    const headings = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')];
+    const postHeading = headings.find(node => /^(貼文|Posts)$/.test(node.textContent.trim()));
+    const postSection = !!postHeading;
+    const text = document.body.innerText.slice(0,6000);
+    const postLinks = [];
+    const observations = [...document.querySelectorAll('a[href]')].flatMap(link => {
+      const href = link.href;
+      if (!/facebook\.com\/(?:photo|reel\/|watch|(?:[^/]+\/)?videos\/)/.test(href)) return [];
+      const article = link.closest('[role="article"], [data-pagelet^="FeedUnit"]');
+      let card = article;
+      // Facebook sometimes omits article roles; inspect a small local container only.
+      if (!card) {
+        card = link.parentElement;
+        for (let i=0;i<3 && card?.parentElement;i++) card = card.parentElement;
+      }
+      const labels = [...(card?.querySelectorAll('[aria-label],h2,h3,[role="heading"]') || [])].map(node => node.getAttribute('aria-label') || node.textContent.trim());
+      const timeLink=!![...(card?.querySelectorAll('a[href]') || [])].find(node=> /^(\d+\s*(分鐘|小時|天|週|minutes?|hours?|days?|weeks?)|\d{4}年|\d+月\d+日)/i.test(node.textContent.trim()));
+      const inPost=!!article || /[?&]set=pcb\./.test(href) || timeLink;
+      const pinned=labels.some(label => /^(置頂貼文|已置頂|Pinned post|Pinned)$/i.test(label));
+      const featured=labels.some(label => /^(精選|Featured)$/i.test(label));
+      if (inPost && !pinned && !featured) postLinks.push(link);
+      return [{href, inPost, pinned, featured,
+        video:!!card?.querySelector('video')}];
+    });
+    const root = document.scrollingElement || document.documentElement;
+    const feed = document.querySelector('[role="feed"]');
+    let scrollElement = root;
+    // A feed can live in a nested scrolling panel. Choose its common scrollable
+    // ancestor, rather than a photo carousel or a panel containing one card.
+    let ancestor = feed && (!postLinks.length || postLinks.some(link => feed.contains(link))) ? feed : postLinks[0] || postHeading;
+    for (;ancestor && ancestor!==root;ancestor=ancestor.parentElement) {
+      if (/^(auto|scroll)$/.test(getComputedStyle(ancestor).overflowY) && ancestor.clientHeight>0 &&
+          postLinks.every(link => ancestor.contains(link))) {
+        scrollElement=ancestor;
+        break;
+      }
+    }
+    const viewport = scrollElement===root ? root.clientHeight || window.innerHeight : scrollElement.clientHeight;
+    if (shouldScroll) {
+      const step=Math.max(1,viewport*0.9);
+      if (scrollElement===root) window.scrollBy(0,step);
+      else scrollElement.scrollBy(0,step);
+    }
+    const top=scrollElement.scrollTop, height=scrollElement.scrollHeight;
+    return {postSection, authenticated:!!document.querySelector('[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"]'),
+      loginForm:!!document.querySelector('input[name="email"],input[name="pass"]'),
+      unavailable:/內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text),
+      observations, scroll:{top,viewport,height,bottomDistance:Math.max(0,height-viewport-top),container:scrollElement===root?'document':'element'}};
+  },scroll);
+}
+
+async function contextFor(profile, login, loadPlaywright, extraOptions={}) {
+  const path = resolve(profile);
+  if (login) {
+    try {await mkdir(path,{recursive:true,mode:0o700});}
+    catch {throw new CollectorError('profile_unavailable');}
+  }
+  let info;
+  try {info=await lstat(path);}
+  catch (error) {throw new CollectorError(error.code==='ENOENT'?'profile_missing':'profile_unavailable');}
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new CollectorError('profile_unavailable');
+  try {await access(path,constants.R_OK|constants.W_OK);}
+  catch {throw new CollectorError('profile_unavailable');}
+
+  let chromium;
+  try {({chromium}=await loadPlaywright());}
+  catch (error) {
+    if (['ERR_MODULE_NOT_FOUND','MODULE_NOT_FOUND'].includes(error.code)) throw new CollectorError('browser_dependency_missing');
+    throw error;
+  }
+  try {await access(chromium.executablePath(),constants.X_OK);}
+  catch {throw new CollectorError('browser_missing');}
+  try {
+    return await chromium.launchPersistentContext(path,{...extraOptions,headless:!login,viewport:{width:1280,height:1000},locale:'zh-TW',timezoneId:'Asia/Taipei'});
+  } catch (error) {
+    // Recognize known local launch diagnostics only; never copy them into output.
+    const message=typeof error?.message==='string'?error.message:'';
+    if (/Permission denied|\bEACCES\b|\bEPERM\b|No space left on device|Read-only file system/i.test(message)) throw new CollectorError('browser_launch_failed');
+    if (/profile(?: directory)? is (?:already )?in use|user data directory is (?:already )?in use|Opening in existing browser session|SingletonLock[^\n]*(?:File exists|already exists)/i.test(message)) throw new CollectorError('profile_in_use');
+    // Headless mode can select a separate executable from executablePath().
+    if (error?.code==='ENOENT' || /Executable doesn't exist|download new browsers/i.test(message)) throw new CollectorError('browser_missing');
+    throw new CollectorError('browser_launch_failed');
+  }
+}
+
+async function navigate(page, url) {
+  try {await page.goto(url,{waitUntil:'domcontentloaded',timeout:60000});}
+  catch {throw new CollectorError('facebook_navigation_failed');}
+}
+
+async function discover(profile, maxScrolls, loadPlaywright) {
+  // Includes navigation and heading hydration; stays below the caller's 300s timeout.
+  const deadline = Date.now()+240000;
+  const context = await contextFor(profile,false,loadPlaywright);
+  const capturedAt = new Date().toISOString();
+  try {
+    const page = context.pages()[0] || await context.newPage();
+    await navigate(page,PAGE);
+    await page.getByRole('heading',{name:/^(貼文|Posts)$/}).first().waitFor({timeout:20000}).catch(()=>{});
+    const observations = new Map(), seenPosts = new Set();
+    let scrolls=0, snapshots=0, loadWaitMs=0, reason='scan_limit';
+    const record = state => {
+      snapshots++;
+      const error = classifyPage(state);
+      if (error) return error;
+      for (const item of state.observations) observations.set(JSON.stringify(item),item);
+      for (const post of collectObservations(state.observations).posts) seenPosts.add(post.albumPostId || `photo:${post.photoId}`);
+      return null;
+    };
+    let state=await snapshot(page), blocked=record(state);
+    while (!blocked && scrolls<maxScrolls && Date.now()<deadline) {
+      state=await snapshot(page,true);
+      scrolls++;
+      blocked=record(state);
+      if (blocked) break;
+      await page.waitForTimeout(Math.min(800,Math.max(0,deadline-Date.now())));
+      state=await snapshot(page);
+      blocked=record(state);
+      if (blocked) break;
+      if (state.scroll.bottomDistance>2) continue;
+
+      // Reaching the bottom only starts an idle check. Delayed loads and
+      // constant-height virtualization can make new IDs appear without growth.
+      const before=state.scroll, beforeCount=seenPosts.size;
+      let waited=0, progress=false;
+      while (waited<3000 && Date.now()<deadline) {
+        const interval=Math.min(500,3000-waited,Math.max(0,deadline-Date.now()));
+        await page.waitForTimeout(interval);
+        waited+=interval;
+        loadWaitMs+=interval;
+        state=await snapshot(page);
+        blocked=record(state);
+        if (blocked) break;
+        const after=state.scroll;
+        if (seenPosts.size>beforeCount || after.top!==before.top || after.height!==before.height ||
+            after.viewport!==before.viewport || after.container!==before.container) {progress=true;break;}
+      }
+      if (blocked) break;
+      if (!progress && waited>=3000) {reason='feed_stalled';break;}
+    }
+    if (blocked) return {version:1,state:'blocked',capturedAt,posts:[],skippedVideos:0,reason:blocked,message:'Facebook 登入或貼文讀取需要處理；未視為沒有貼文。'};
+    const collected=collectObservations(observations.values());
+    const coverage={state:'partial',reason,scrolls,snapshots,atBottom:state.scroll.bottomDistance<=2,
+      observedPhotoPosts:collected.posts.length,observedVideos:collected.skippedVideos,loadWaitMs,scroll:state.scroll,
+      budget:reason==='scan_limit' ? Date.now()>=deadline ? 'time_limit' : 'scroll_limit' : null};
+    return {version:1,state:'partial',capturedAt,...collected,reason,coverage,
+      message:'已掃描可見照片貼文；掃描範圍有限，未宣稱粉專所有最新貼文都已收齊。'};
+  } finally {await context.close();}
+}
+
+async function react(profile,value,loadPlaywright) {
+  let url;
+  try {url=new URL(value);}
+  catch {throw new CollectorError('invalid_arguments');}
+  if (url.protocol!=='https:' || !['www.facebook.com','facebook.com'].includes(url.hostname) || url.username || url.password || url.port || [...url.searchParams.keys()].some(key=>SECRET.test(key))) throw new CollectorError('invalid_arguments');
+  if (url.pathname!=='/permalink.php' && !/^\/(?:[^/]+\/)?posts\//.test(url.pathname)) throw new CollectorError('invalid_arguments');
+  const context = await contextFor(profile,false,loadPlaywright);
+  try {
+    const page = context.pages()[0] || await context.newPage();
+    await navigate(page,url.href);
+    const remove = page.getByRole('button',{name:/^(?:從小鹿托嬰中心的貼文移除讚|對小鹿托嬰中心的貼文收回讚)$/});
+    const like = page.getByRole('button',{name:/^對小鹿托嬰中心的貼文表示讚$/});
+    // Hydration may reveal either state. Strict matching rejects ambiguous controls.
+    await like.or(remove).waitFor({state:'visible',timeout:15000});
+    const removeCount = await remove.count(), likeCount = await like.count();
+    if (removeCount + likeCount !== 1) throw new CollectorError('browser_unavailable');
+    if (removeCount) return {state:'complete',reaction:'already_liked'};
+    await like.click();
+    await remove.waitFor({state:'visible',timeout:10000});
+    return {state:'complete',reaction:'liked'};
+  } finally {await context.close();}
+}
+
+function requirePhotoPage(page,photoId) {
+  const photo=normalizePhotoLink(page.url());
+  if (!photo || photo.photoId!==photoId || new URL(page.url()).searchParams.getAll('fbid').length!==1)
+    throw new CollectorError('browser_unavailable');
+}
+
+async function photoFeedback(page,photoId) {
+  // The photo viewer still labels this button as a "post". Resolve feedback
+  // through the requested Photo itself, never through its container story.
+  return page.evaluate(expected=>{
+    const targets=new Set();let invalid=false,budget=60000,totalBytes=0;
+    for(const script of document.querySelectorAll('script[type="application/json"]')) {
+      const text=script.textContent;
+      totalBytes+=text.length;
+      if(totalBytes>16*1024*1024) return null;
+      let parsed;
+      try {parsed=JSON.parse(text);} catch {continue;}
+      const stack=[[parsed,0]];
+      while(stack.length) {
+        if(--budget<0) return null;
+        const [value,depth]=stack.pop();
+        if(!value || typeof value!=='object' || depth>50) continue;
+        if(value.__typename==='Photo' && value.id===expected && value.feedback) {
+          const feedback=value.feedback;
+          try {
+            const url=new URL(feedback.url);
+            if(typeof feedback.id!=='string' || !/^[A-Za-z0-9+/=_:.\-]{1,512}$/.test(feedback.id) ||
+                url.protocol!=='https:' || !['www.facebook.com','facebook.com','m.facebook.com'].includes(url.hostname) ||
+                url.username || url.password || url.port || !['/photo/','/photo','/photo.php'].includes(url.pathname) ||
+                url.searchParams.getAll('fbid').length!==1 || url.searchParams.get('fbid')!==expected) invalid=true;
+            else targets.add(feedback.id);
+          } catch {invalid=true;}
+        }
+        for(const child of Object.values(value)) if(child && typeof child==='object') stack.push([child,depth+1]);
+      }
+    }
+    return !invalid && targets.size===1 ? [...targets][0] : null;
+  },photoId);
+}
+
+async function reactPhoto(profile,photoId,loadPlaywright) {
+  if(typeof photoId!=='string' || !/^[1-9]\d{0,31}$/.test(photoId)) throw new CollectorError('invalid_arguments');
+  const context=await contextFor(profile,false,loadPlaywright,{serviceWorkers:'block'});
+  try {
+    const page=context.pages()[0] || await context.newPage();
+    await navigate(page,`https://www.facebook.com/photo/?fbid=${photoId}`);
+    requirePhotoPage(page,photoId);
+    const remove=page.getByRole('button',{name:/^(?:從小鹿托嬰中心的貼文移除讚|對小鹿托嬰中心的貼文收回讚)$/});
+    const like=page.getByRole('button',{name:/^對小鹿托嬰中心的貼文表示讚$/});
+    await like.or(remove).waitFor({state:'visible',timeout:15000});
+    requirePhotoPage(page,photoId);
+    const feedbackId=await photoFeedback(page,photoId);
+    if(!feedbackId || await remove.count()+await like.count()!==1) throw new CollectorError('browser_unavailable');
+    if(await remove.count()) return {state:'complete',reaction:'already_liked',photoId};
+
+    let accepted=0,rejected=false,confirmation=Promise.resolve(false);
+    // Inspect mutation variables only in memory. Unknown targets and removal
+    // reactions never leave this browser; no secret request data is logged.
+    await page.route(/^https:\/\/(?:www\.|m\.)?facebook\.com\/api\/graphql\/?(?:\?.*)?$/,async route=>{
+      const request=route.request();
+      if(request.method()!=='POST') {await route.continue();return;}
+      const form=new URLSearchParams(request.postData() || '');
+      const name=form.get('fb_api_req_friendly_name') || '';
+      if(name && !name.endsWith('Mutation')) {await route.continue();return;}
+      let input;
+      try {input=JSON.parse(form.get('variables') || '{}').input;} catch {}
+      if(name==='CometUFIFeedbackReactMutation' && input?.feedback_id===feedbackId &&
+          input.feedback_reaction_id==='1635855486666999' && accepted===0 && !rejected) {
+        accepted++;
+        confirmation=route.continue().then(async()=>{
+          const response=await request.response();
+          if(!response) return false;
+          const failure=await response.finished();
+          return response.ok() && !failure;
+        }).catch(()=>false);
+      } else {rejected=true;await route.abort();}
+    });
+    await like.click();
+    await remove.waitFor({state:'visible',timeout:10000});
+    let timer,confirmed;
+    try {
+      confirmed=await Promise.race([confirmation,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),10000);})]);
+    } finally {clearTimeout(timer);}
+    requirePhotoPage(page,photoId);
+    if(!confirmed || rejected || accepted!==1 || await remove.count()!==1 || await like.count()!==0)
+      throw new CollectorError('browser_unavailable');
+    // GraphQL can return HTTP 200 errors while the UI is optimistic. Reload
+    // the canonical Photo from the server and confirm its persisted state.
+    await navigate(page,`https://www.facebook.com/photo/?fbid=${photoId}`);
+    await like.or(remove).waitFor({state:'visible',timeout:15000});
+    requirePhotoPage(page,photoId);
+    if(await photoFeedback(page,photoId)!==feedbackId || await remove.count()!==1 || await like.count()!==0)
+      throw new CollectorError('browser_unavailable');
+    return {state:'complete',reaction:'liked',photoId};
+  } finally {await context.close();}
+}
+
+export async function main(args=process.argv.slice(2), {loadPlaywright=()=>import('playwright'),stderr=process.stderr}={}) {
+  args=[...args];
+  const command=args.shift();
+  const options={};
+  while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
+  if(!['login','discover','react','react-photo'].includes(command) || !options['--profile'] ||
+      (command!=='react-photo' && Object.hasOwn(options,'--photo-id'))) throw new CollectorError('invalid_arguments');
+  if(command==='react-photo') {
+    if(Object.keys(options).some(key=>!['--profile','--photo-id'].includes(key))) throw new CollectorError('invalid_arguments');
+    return reactPhoto(options['--profile'],options['--photo-id'],loadPlaywright);
+  }
+  if(command==='login') {
+    const context=await contextFor(options['--profile'],true,loadPlaywright);
+    let closed=false, loaded=false, finishClosure, failClosure;
+    const closure=new Promise((resolve,reject)=>{
+      finishClosure=()=>{closed=true;resolve();};
+      failClosure=()=>reject(new CollectorError('browser_unavailable'));
+    });
+    context.once('close',finishClosure);
+    let closing;
+    const closeContext=()=>closing ||= context.close();
+    const watchedPages=new Set();
+    const closeIfEmpty=()=>{if(!closed && context.pages().length===0) void closeContext().then(finishClosure,failClosure);};
+    const watchPage=page=>{
+      if(watchedPages.has(page)) return;
+      watchedPages.add(page);
+      page.once('close',closeIfEmpty);
+    };
+    context.on('page',watchPage);
+    for(const page of context.pages()) watchPage(page);
+    try {
+      const navigation=(async()=>{
+        const page=context.pages()[0] || await context.newPage();
+        await navigate(page,PAGE);
+      })();
+      await Promise.race([navigation,closure.then(()=>{throw new CollectorError('login_cancelled');})]);
+      if(closed || closing) throw new CollectorError('login_cancelled');
+      loaded=true;
+      stderr.write('請在專用瀏覽器自行登入 Facebook；完成後退出整個專用瀏覽器（macOS 可按 ⌘Q）。此設定檔只供 SunnyEgg 使用。\n');
+      await closure;
+      return {state:'complete',message:'專用瀏覽器已關閉；下次執行會檢查登入是否有效。'};
+    } catch(error) {
+      if(error instanceof CollectorError && error.reason==='browser_unavailable') throw error;
+      if(!loaded && (closed || closing)) throw new CollectorError('login_cancelled');
+      throw error;
+    } finally {
+      context.off('close',finishClosure);
+      context.off('page',watchPage);
+      for(const page of watchedPages) page.off('close',closeIfEmpty);
+      await closeContext().catch(()=>{});
+    }
+  }
+  if(command==='discover') {
+    const max=Number(options['--max-scrolls'] || 12);
+    if(!Number.isInteger(max) || max<1 || max>100) throw new CollectorError('invalid_arguments');
+    return discover(options['--profile'],max,loadPlaywright);
+  }
+  if(command==='react' && options['--url']) return react(options['--profile'],options['--url'],loadPlaywright);
+  throw new CollectorError('invalid_arguments');
+}
+
+export async function runCollector(args=process.argv.slice(2), options={}) {
+  try {return await main(args,options);}
+  catch (error) {
+    const reason=error instanceof CollectorError && Object.hasOwn(MESSAGES,error.reason)?error.reason:'browser_unavailable';
+    return {version:1,state:'blocked',capturedAt:new Date().toISOString(),posts:[],skippedVideos:0,reason,message:MESSAGES[reason]};
+  }
+}
+
+if (process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
+  const result=await runCollector();
+  process.stdout.write(JSON.stringify(result)+'\n');
+  process.exitCode=result.state==='blocked'?2:0;
+}

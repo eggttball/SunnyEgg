@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "media": "photos",
+  "schedule": { "cron": "0 20 * * *", "timeZone": "Asia/Taipei" },
+  "browserProfile": "data/browser-profile",
+  "maxScrolls": 12,
+  "threshold": 0.5,
+  "referenceThresholdMargin": 0.015,
+  "autoLike": true
+}

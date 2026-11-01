@@ -1,0 +1,10 @@
+[Unit]
+Description=SunnyEgg daily photos at 20:00 Taipei
+
+[Timer]
+OnCalendar=*-*-* 20:00:00 Asia/Taipei
+Persistent=true
+Unit=sunnyegg-photos.service
+
+[Install]
+WantedBy=timers.target

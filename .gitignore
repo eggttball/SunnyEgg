@@ -1,0 +1,27 @@
+# Local secrets and runtime environments
+.env
+.env.*
+!.env.example
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Personal media, reference photos, browser profile, and processing state
+/data/*
+!/data/media/
+/data/media/*
+!/data/media/.gitkeep
+!/data/clips/
+/data/clips/*
+!/data/clips/.gitkeep
+!/data/models/
+/data/models/*
+!/data/models/README.md
+!/data/reference-child/
+/data/reference-child/*
+!/data/reference-child/README.md
+
+# Local investigation notes can contain private post identifiers and face scores
+/docs/*

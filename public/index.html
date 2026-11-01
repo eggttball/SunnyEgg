@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#faf7ee">
+    <title>荷包蛋｜孩子的日常小集</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#gallery">跳到日常相簿</a>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主要導覽">
+        <a class="brand" href="/" aria-label="荷包蛋 首頁"><span class="egg-mark" aria-hidden="true">●</span><span>荷包蛋<small>把成長，好好收藏。</small></span></a>
+        <div class="workspace-label">我們的小天地</div>
+        <nav><a class="nav-item active" href="#gallery" aria-current="page"><span aria-hidden="true">▦</span>日常相簿</a></nav>
+        <div class="sidebar-footer">LOCAL GALLERY <span>・</span> 私人相簿</div>
+      </aside>
+      <main>
+        <header class="topbar"><div><span class="small-sun" aria-hidden="true">☀</span> 每一個小日子，都值得記得</div><a id="source-page" class="source-link" href="https://www.facebook.com/profile.php?id=100063963161862" target="_blank" rel="noopener noreferrer">小鹿托嬰中心 <span aria-hidden="true">↗</span></a></header>
+        <section class="intro" aria-labelledby="page-title">
+          <div class="eyebrow">LITTLE MOMENTS, BIG MEMORIES</div>
+          <h1 id="page-title">孩子的日常小集<span aria-hidden="true">.</span></h1>
+          <div class="intro-bottom"><button id="refresh" class="button subtle" type="button" data-control-only="" hidden><span aria-hidden="true">↻</span> 重新讀取本機資料</button></div>
+        </section>
+        <section class="daily-card" aria-labelledby="daily-title" data-control-only="" hidden>
+          <div><h2 id="daily-title">每日照片流程</h2><p id="schedule-summary">每天 20:00（台灣時間）</p><p class="schedule-note">本機排程啟動後，會每日檢查照片。</p></div>
+          <div id="job-status" class="status-banner" role="status" aria-live="polite" hidden></div>
+          <form id="manual-fetch-form" class="manual-fetch" aria-labelledby="manual-fetch-title" aria-busy="true" data-control-only="" hidden>
+            <h3 id="manual-fetch-title">隨時抓取貼文</h3>
+            <p id="fetch-range-hint" class="schedule-note">預設最近 3 天（含今天）。最多往前 3 個月，日期皆以台灣時間計算。</p>
+            <fieldset id="manual-fetch-controls" class="fetch-controls" disabled>
+              <legend class="visually-hidden">選擇要抓取的貼文日期</legend>
+              <div class="fetch-field fetch-preset-field"><label for="fetch-preset">抓取範圍</label><select id="fetch-preset" aria-describedby="fetch-range-hint"><option value="3d">最近 3 天</option></select></div>
+              <div class="fetch-field"><label for="fetch-start-date">起日</label><input id="fetch-start-date" name="startDate" type="date" required aria-describedby="fetch-range-hint"></div>
+              <div class="fetch-field"><label for="fetch-end-date">迄日</label><input id="fetch-end-date" name="endDate" type="date" required aria-describedby="fetch-range-hint"></div>
+              <button id="manual-fetch-submit" class="button fetch-button" type="submit">立即抓取貼文</button>
+            </fieldset>
+            <p id="fetch-range-summary" class="schedule-note">正在確認可抓取的日期…</p>
+            <div id="manual-fetch-status" class="status-banner" role="status" aria-live="polite" aria-atomic="true"><strong>正在確認抓取狀態…</strong></div>
+          </form>
+        </section>
+        <section class="audit-section" aria-labelledby="post-audits-title" data-control-only="" hidden>
+          <h2 id="post-audits-title">逐篇照片檢查</h2>
+          <p class="audit-note">新抓取照片只有候選會保留。本機相簿張數與原貼文已比對張數分開計算。</p>
+          <div id="post-audits" aria-live="polite"><p class="audit-note">正在讀取逐篇照片檢查紀錄…</p></div>
+        </section>
+        <section id="gallery" aria-labelledby="gallery-title">
+          <div class="section-heading"><div><h2 id="gallery-title">日常相簿</h2></div><div class="date-control"><label for="date-filter">貼文日期</label><select id="date-filter"><option value="all">所有日期</option></select></div></div>
+          <div class="filter-row"><div class="filters" role="group" aria-label="照片檢視"><button class="filter active" type="button" data-filter="candidate" aria-pressed="true" data-control-only="" hidden>候選照片 <span id="count-candidate">0</span></button><button class="filter" type="button" data-filter="all" aria-pressed="false" data-control-only="" hidden>查看本機保留照片 <span id="count-all">0</span></button></div></div>
+          <div id="fetch-status" class="status-banner" role="status" aria-live="polite" data-control-only="" hidden></div>
+          <div id="api-error" class="error-banner" role="alert" hidden></div>
+          <div id="gallery-content" aria-busy="true"><div class="loading-state">正在打開日常相簿…</div></div>
+        </section>
+        <footer class="main-footer"><span>荷包蛋 <span aria-hidden="true">✳</span> 留住小小的美好</span></footer>
+      </main>
+    </div>
+  </body>
+</html>

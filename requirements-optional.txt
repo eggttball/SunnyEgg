@@ -1,0 +1,8 @@
+# Optional only: local import, status and the gallery use the standard library.
+# Install explicitly with: python3 -m pip install -r requirements-optional.txt
+# Python 3.9-compatible ranges; no package/model is installed by the scripts.
+yt-dlp>=2024.10.22,<2025.10
+imageio-ffmpeg>=0.5,<0.7
+numpy>=1.24,<2.1
+opencv-python-headless>=4.8,<4.12
+# YuNet/SFace .onnx models are separate local files; see README.md.
