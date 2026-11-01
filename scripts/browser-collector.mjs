@@ -275,9 +275,48 @@ async function inspectPost(profile,value,loadPlaywright) {
   try {
     const page=context.pages()[0] || await context.newPage();
     await navigate(page,target.url);
-    await page.waitForFunction(()=>document.querySelector('input[name="email"],input[name="pass"],'+
-      '[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"],'+
-      '[role="article"],[data-pagelet^="FeedUnit"]'),null,{timeout:12000}).catch(()=>{});
+    await page.waitForFunction(expected=>{
+      const main=document.querySelector('[role="main"]') || document.body;
+      const links=[...main.querySelectorAll('a[href]')];
+      let effective=expected;
+      if(expected.share) {
+        try {
+          const resolved=new URL(location.href);
+          const storyId=resolved.searchParams.get('story_fbid'),pageId=resolved.searchParams.get('id');
+          effective=storyId && pageId ? {storyId,pageId} : {path:resolved.pathname.replace(/\/$/,'')};
+        } catch {}
+      }
+      const sameTarget=href=>{
+        try {
+          const link=new URL(href,location.href);
+          if(!['www.facebook.com','facebook.com','m.facebook.com'].includes(link.hostname)) return false;
+          if(effective.storyId) return ['permalink.php','story.php'].includes(link.pathname.slice(1)) &&
+            link.searchParams.get('story_fbid')===effective.storyId && link.searchParams.get('id')===effective.pageId ||
+            /\/posts\/([^/]+)\/?$/.test(link.pathname) &&
+            decodeURIComponent(link.pathname.match(/\/posts\/([^/]+)\/?$/)[1])===effective.storyId;
+          return link.pathname.replace(/\/$/,'')===(effective.path || expected.path);
+        } catch {return false;}
+      };
+      const hasPostLink=links.some(link=>sameTarget(link.href));
+      const hasPhotoLink=links.some(link=>{
+        try {
+          const photo=new URL(link.href);
+          return ['www.facebook.com','facebook.com','m.facebook.com'].includes(photo.hostname) &&
+            ['/photo/','/photo','/photo.php'].includes(photo.pathname) &&
+            photo.searchParams.getAll('fbid').length===1 && /^\d+$/.test(photo.searchParams.get('fbid') || '');
+        } catch {return false;}
+      });
+      const path=location.pathname.replace(/\/$/,'');
+      const directRoute=expected.storyId
+        ? (['/permalink.php','/story.php'].includes(path) &&
+           new URL(location.href).searchParams.get('story_fbid')===expected.storyId) ||
+          decodeURIComponent(path.match(/\/posts\/([^/]+)$/)?.[1] || '')===expected.storyId
+        : path===(effective.path || expected.path);
+      const text=document.body.innerText.slice(0,6000);
+      return !!document.querySelector('input[name="email"],input[name="pass"]') ||
+        /內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text) ||
+        (hasPhotoLink && (hasPostLink || directRoute));
+    },target,{timeout:12000}).catch(()=>{});
     const observed=await page.evaluate(expected=>{
       const text=document.body.innerText.slice(0,6000);
       const main=document.querySelector('[role="main"]') || document.body;
@@ -313,24 +352,41 @@ async function inspectPost(profile,value,loadPlaywright) {
             decodeURIComponent(current.pathname.match(/\/posts\/([^/]+)\/?$/)?.[1] || '')===expected.storyId;
         } else currentIsTarget=current.pathname.replace(/\/$/,'')===expected.path;
       } catch {}
-      const article=articles.find(node=>[...node.querySelectorAll('a[href]')].some(link=>sameTarget(link.href))) ||
-        (currentIsTarget ? articles[0] || null : null);
-      const scope=article || main;
-      const photos=[];
-      for(const link of scope.querySelectorAll('a[href]')) {
+      const photoLinks=container=>[...container.querySelectorAll('a[href]')].filter(link=>{
         try {
           const url=new URL(link.href);
-          if(!['www.facebook.com','facebook.com','m.facebook.com'].includes(url.hostname) ||
-              !['/photo/','/photo','/photo.php'].includes(url.pathname)) continue;
-          const ids=url.searchParams.getAll('fbid');
-          if(ids.length===1 && /^\d+$/.test(ids[0])) photos.push({photoId:ids[0],href:url.href});
-        } catch {}
+          return ['www.facebook.com','facebook.com','m.facebook.com'].includes(url.hostname) &&
+            ['/photo/','/photo','/photo.php'].includes(url.pathname) &&
+            url.searchParams.getAll('fbid').length===1 && /^\d+$/.test(url.searchParams.get('fbid') || '');
+        } catch {return false;}
+      });
+      const targetLink=[...main.querySelectorAll('a[href]')].find(link=>sameTarget(link.href));
+      const matchingArticle=articles.find(node=>[...node.querySelectorAll('a[href]')].some(link=>sameTarget(link.href)) &&
+        photoLinks(node).length>0);
+      let scope=matchingArticle;
+      if(!scope && targetLink) {
+        // Single-post pages can render the post in ordinary divs rather than
+        // an article/feed unit. Stay close to the permalink and stop at the
+        // first ancestor that contains an FB photo link.
+        for(let node=targetLink,depth=0;node && node!==main && depth<12;node=node.parentElement,depth++) {
+          if(photoLinks(node).length) {scope=node;break;}
+        }
+      }
+      if(!scope && currentIsTarget) {
+        const pagePhotos=photoLinks(main);
+        if(pagePhotos.length===1) scope=main;
+      }
+      const photos=[];
+      for(const link of scope ? photoLinks(scope) : []) {
+        const url=new URL(link.href);
+        const ids=url.searchParams.getAll('fbid');
+        photos.push({photoId:ids[0],href:url.href});
       }
       const unique=[...new Map(photos.map(photo=>[photo.photoId,photo])).values()];
       return {loginForm:!!document.querySelector('input[name="email"],input[name="pass"]'),
         authenticated:!!document.querySelector('[aria-label^="帳號"],[aria-label^="Account"],[aria-label*="你的個人檔案"],[aria-label*="Your profile"]'),
         unavailable:/內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text),
-        articleFound:!!article,photos:unique,videoCount:scope.querySelectorAll('video').length};
+        articleFound:!!matchingArticle || !!targetLink || currentIsTarget,photos:unique,videoCount:scope?.querySelectorAll('video').length || 0};
     },target);
     if(observed.loginForm || !observed.authenticated) throw new CollectorError('login_required');
     if(observed.unavailable || !observed.articleFound) throw new CollectorError('post_unavailable');

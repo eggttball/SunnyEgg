@@ -78,6 +78,8 @@ def graph_failure(error):
         return FetchError("Facebook API 暫時達到讀取上限；已停止後續請求，請稍後重試", "blocked", "rate_limit")
     if code in {10, 200}:
         return FetchError("Facebook 拒絕讀取此專頁；請確認已核准的權限或適用的 Page Public Content Access", "blocked", "permission")
+    if code == 100 and error.get("error_subcode") == 33:
+        return FetchError("Facebook API 無法存取這張照片；物件可能不可用，或 App 沒有讀取權限", "blocked", "permission")
     if code in {102, 190}:
         return FetchError("Facebook 存取權杖無效或已過期；請在本機更新 FB_ACCESS_TOKEN", "blocked", "credentials")
     return FetchError("Facebook Graph API 讀取失敗；請確認應用程式設定與可用 API 版本")
