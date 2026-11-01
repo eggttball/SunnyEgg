@@ -245,7 +245,7 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
     return card;
   }
   const image = element("img");
-  image.alt = `本機匯入照片：${asset.name || "未命名照片"}`;
+  image.alt = "托嬰中心照片";
   image.loading = "lazy";
   image.decoding = "async";
   image.addEventListener("error", () => {
@@ -270,9 +270,8 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
     card.append(imageLink);
   } else card.append(image);
   const caption = element("figcaption", "media-caption");
-  caption.append(element("span", "media-name", asset.name || "本機照片"));
   if (candidatePhotoId) {
-    const originalLink = element("a", "photo-source-link", "查看 FB 原照片 ↗");
+    const originalLink = element("a", "photo-source-link", "查看原照片 ↗");
     originalLink.href = "https://www.facebook.com/photo/?fbid=" + encodeURIComponent(candidatePhotoId);
     originalLink.target = "_blank";
     originalLink.rel = "noopener noreferrer";
@@ -284,8 +283,9 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
     no_face: "未偵測到人臉 · 尚無可供比對的人臉",
     error: "這張照片辨識失敗 · 尚未完成檢查",
   };
-  if (asset.manualSelection === true) caption.append(element("span", "match-label", "手動加入 · 未執行辨識"));
-  else if (result?.state !== "candidate") caption.append(element("span", "match-label", labels[result?.state] || "尚未產生辨識結果"));
+  if (asset.manualSelection !== true && result?.state !== "candidate") {
+    caption.append(element("span", "match-label", labels[result?.state] || "尚未產生辨識結果"));
+  }
   if (controlMode) {
     const key = feedbackKey(postId, asset.id);
     if (asset.userExcluded === true) caption.append(element("span", "photo-excluded-label", "已排除 · 不會出現在一般相簿"));

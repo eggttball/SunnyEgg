@@ -7,7 +7,7 @@
 .photo-feedback-button{display:inline-flex;align-items:center;justify-content:center;min-height:34px;margin-top:9px;padding:6px 10px;border:1px solid #c5cbbb;border-radius:7px;background:var(--paper);color:var(--green);font-size:11px;line-height:1.6;font-weight:600}.photo-feedback-button:hover:not(:disabled){background:var(--green-soft)}.user-excluded{border-style:dashed;background:#f2f0e8}.user-excluded img{opacity:.48}.photo-excluded-label{display:block;margin-top:7px;color:#805e2d;font-size:10px;font-weight:600}.photo-feedback-error{margin:8px 0 0;color:#984929;font-size:10px;line-height:1.8}@media(max-width:760px){.photo-feedback-button{min-height:44px}}
 .media-source-image-link{display:block;cursor:zoom-in}
 .media-source-image-link:hover img{filter:brightness(.96)}
-.photo-source-link{display:inline-block;margin-top:6px;color:var(--green);font-size:10px;font-weight:600;text-decoration:none}
+.photo-source-link{display:block;margin-top:6px;color:var(--green);font-size:10px;font-weight:600;text-align:right;text-decoration:none}
 .photo-source-link:hover{text-decoration:underline}
 /* Give each post the width of the photos it displays on desktop. */
 .post-list{grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
