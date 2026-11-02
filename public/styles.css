@@ -9,6 +9,8 @@
 .media-source-image-link:hover img{filter:brightness(.96)}
 .photo-source-link{display:block;margin-top:6px;color:var(--green);font-size:10px;font-weight:600;text-align:right;text-decoration:none}
 .photo-source-link:hover{text-decoration:underline}
+.back-to-top{color:var(--green);font-size:10px;text-decoration:none}
+.back-to-top:hover{text-decoration:underline}
 /* Give each post the width of the photos it displays on desktop. */
 .post-list{grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
 .post-card[data-photo-layout="2"]{grid-column:span 2}
