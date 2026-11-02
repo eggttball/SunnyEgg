@@ -425,7 +425,9 @@ function render() {
   const firstPostByMonth = new Map();
   for (const { post } of navEntries) {
     const date = dateKey(post.publishedAt);
-    if (date !== "unknown" && !firstPostByMonth.has(date.slice(0, 7))) firstPostByMonth.set(date.slice(0, 7), post.id);
+    // Entries are newest first, so the final post stored for each month is
+    // the earliest visible post in that month.
+    if (date !== "unknown") firstPostByMonth.set(date.slice(0, 7), post.id);
   }
   const latestPostId = navEntries[0]?.post.id;
   ui.content.replaceChildren();
