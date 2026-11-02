@@ -39,19 +39,27 @@
 @media(max-width:760px){.sidebar{position:static;height:auto;overflow:visible}.month-nav{flex:1;min-width:0;max-width:60vw;max-height:none;overflow-x:auto;overflow-y:hidden;white-space:nowrap}.archive-nav-item{flex:0 0 auto;font-size:10px;padding:8px}}
 html{scroll-behavior:smooth}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-.photo-viewer{position:fixed;inset:0;width:min(96vw,1280px);height:min(94vh,940px);max-width:none;max-height:none;margin:auto;padding:0;overflow:hidden;border:1px solid #ffffff24;border-radius:14px;background:#181a17;color:#fff}
-.photo-viewer::backdrop{background:#10120fe8;backdrop-filter:blur(4px)}
+.photo-viewer{position:fixed;inset:0;width:min(96vw,1280px);height:min(94vh,940px);max-width:none;max-height:none;margin:auto;padding:0;overflow:hidden;border:1px solid #ffffff24;border-radius:14px;background:#181a17;color:#fff;opacity:0;transform:scale(.985);transition:opacity .24s ease,transform .24s ease}
+.photo-viewer.is-visible{opacity:1;transform:scale(1)}
+.photo-viewer::backdrop{background:transparent;backdrop-filter:blur(0);transition:background-color .24s ease,backdrop-filter .24s ease}
+.photo-viewer.is-visible::backdrop{background:#10120fe8;backdrop-filter:blur(4px)}
 .photo-viewer-content{display:grid;grid-template-rows:56px minmax(0,1fr);width:100%;height:100%}
-.photo-viewer-toolbar{display:flex;align-items:center;justify-content:space-between;padding:6px 14px}
+.photo-viewer-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:7px 14px}
+.photo-viewer-meta{min-width:0}
+.photo-viewer-post-title{overflow:hidden;margin:0;color:#fff;font-size:14px;font-weight:650;line-height:1.45;text-overflow:ellipsis;white-space:nowrap}
+.photo-viewer-post-date{display:block;margin-top:2px;color:#c5cbbf;font-size:10px}
+.photo-viewer-actions{display:flex;align-items:center;gap:9px}
 .photo-viewer-count{font-size:12px;color:#e6e9e1;font-variant-numeric:tabular-nums}
-.photo-viewer-close,.photo-viewer-arrow{display:grid;place-items:center;border:1px solid #ffffff35;background:#ffffff12;color:#fff}
+.photo-viewer-close,.photo-viewer-arrow,.photo-viewer-autoplay{display:grid;place-items:center;border:1px solid #ffffff35;background:#ffffff12;color:#fff}
 .photo-viewer-close{width:38px;height:38px;border-radius:50%;font-size:25px;line-height:1}
+.photo-viewer-autoplay{min-height:36px;padding:6px 10px;border-radius:8px;font-size:10px;white-space:nowrap}
 .photo-viewer-stage{display:grid;grid-template-columns:58px minmax(0,1fr) 58px;align-items:center;gap:12px;min-height:0;padding:0 14px 14px;touch-action:pan-y}
 .photo-viewer-image{display:block;width:100%;height:100%;min-height:0;object-fit:contain;transition:opacity .22s ease,transform .22s ease}
 .photo-viewer-image.slide-from-next{opacity:0;transform:translateX(28px)}
 .photo-viewer-image.slide-from-previous{opacity:0;transform:translateX(-28px)}
 .photo-viewer-arrow{width:48px;height:48px;border-radius:50%;font-size:35px;line-height:1}
-.photo-viewer-close:hover,.photo-viewer-arrow:hover:not(:disabled){background:#ffffff2c}
-.photo-viewer-arrow:disabled{cursor:default;opacity:.4}
+.photo-viewer-close:hover,.photo-viewer-arrow:hover:not(:disabled),.photo-viewer-autoplay:hover:not(:disabled){background:#ffffff2c}
+.photo-viewer-arrow:disabled,.photo-viewer-autoplay:disabled{cursor:default;opacity:.4}
 @media(max-width:600px){.photo-viewer{width:100vw;height:100dvh;max-height:100dvh;border:0;border-radius:0}.photo-viewer-content{grid-template-rows:52px minmax(0,1fr)}.photo-viewer-stage{grid-template-columns:42px minmax(0,1fr) 42px;gap:5px;padding:0 7px 12px}.photo-viewer-arrow{width:38px;height:38px;font-size:30px}}
-@media(prefers-reduced-motion:reduce){.photo-viewer-image{transition:none}}
+@media(max-width:600px){.photo-viewer-toolbar{gap:7px;padding:6px 9px}.photo-viewer-post-title{font-size:12px}.photo-viewer-actions{gap:5px}.photo-viewer-count{font-size:10px}.photo-viewer-autoplay{min-height:34px;padding:5px 7px;font-size:9px}}
+@media(prefers-reduced-motion:reduce){.photo-viewer,.photo-viewer::backdrop,.photo-viewer-image{transition:none}}

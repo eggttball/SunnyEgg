@@ -29,9 +29,12 @@ const ui = {
 const slideshow = {
   dialog: document.querySelector("#photo-viewer"),
   image: document.querySelector("#photo-viewer-image"),
+  title: document.querySelector("#photo-viewer-title"),
+  date: document.querySelector("#photo-viewer-post-date"),
   count: document.querySelector("#photo-viewer-count"),
   stage: document.querySelector("#photo-viewer-stage"),
   close: document.querySelector("#photo-viewer-close"),
+  autoplay: document.querySelector("#photo-viewer-autoplay"),
   previous: document.querySelector("#photo-viewer-previous"),
   next: document.querySelector("#photo-viewer-next"),
 };
@@ -54,6 +57,8 @@ let logicalPhotoIndex = new Map();
 let slideshowItems = [];
 let slideshowIndex = 0;
 let swipeStartX = null;
+let slideshowTimer = null;
+let slideshowClosingTimer = null;
 const publishedDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -91,16 +96,21 @@ function mediaUrl(path) {
 
 function showSlideshowImage(direction=0) {
   if (!slideshowItems.length) return;
+  const item = slideshowItems[slideshowIndex];
   const motionClass = direction > 0 ? "slide-from-next" : direction < 0 ? "slide-from-previous" : null;
   slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
   if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     slideshow.image.classList.add(motionClass);
     void slideshow.image.offsetWidth;
   }
-  slideshow.image.src = slideshowItems[slideshowIndex];
+  slideshow.image.src = item.src;
+  slideshow.image.alt = `${item.title}，${item.date}`;
+  slideshow.title.textContent = item.title;
+  slideshow.date.textContent = item.date;
   slideshow.count.textContent = `${slideshowIndex + 1} / ${slideshowItems.length}`;
   slideshow.previous.disabled = slideshowItems.length < 2;
   slideshow.next.disabled = slideshowItems.length < 2;
+  slideshow.autoplay.disabled = slideshowItems.length < 2;
   if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     requestAnimationFrame(() => slideshow.image.classList.remove(motionClass));
   }
@@ -114,14 +124,52 @@ function moveSlideshow(direction) {
 
 function openSlideshow(items, index) {
   const selected = items[index];
-  slideshowItems = items.filter(item => typeof item === "string");
+  slideshowItems = items.filter(item => item && typeof item.src === "string");
   slideshowIndex = Math.max(0, slideshowItems.indexOf(selected));
   if (!slideshowItems.length) return;
+  window.clearTimeout(slideshowClosingTimer);
+  slideshowClosingTimer = null;
+  stopSlideshowAutoplay();
   showSlideshowImage();
   if (!slideshow.dialog.open) slideshow.dialog.showModal();
+  requestAnimationFrame(() => slideshow.dialog.classList.add("is-visible"));
 }
 
-slideshow.close.addEventListener("click", () => slideshow.dialog.close());
+function stopSlideshowAutoplay() {
+  window.clearInterval(slideshowTimer);
+  slideshowTimer = null;
+  slideshow.autoplay.textContent = "▶ 自動播放";
+  slideshow.autoplay.setAttribute("aria-pressed", "false");
+}
+
+function toggleSlideshowAutoplay() {
+  if (slideshowTimer !== null) {
+    stopSlideshowAutoplay();
+    return;
+  }
+  if (slideshowItems.length < 2) return;
+  slideshow.autoplay.textContent = "Ⅱ 暫停播放";
+  slideshow.autoplay.setAttribute("aria-pressed", "true");
+  slideshowTimer = window.setInterval(() => moveSlideshow(1), 4000);
+}
+
+function closeSlideshow() {
+  if (!slideshow.dialog.open) return;
+  stopSlideshowAutoplay();
+  slideshow.dialog.classList.remove("is-visible");
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    slideshow.dialog.close();
+    return;
+  }
+  window.clearTimeout(slideshowClosingTimer);
+  slideshowClosingTimer = window.setTimeout(() => {
+    if (slideshow.dialog.open && !slideshow.dialog.classList.contains("is-visible")) slideshow.dialog.close();
+    slideshowClosingTimer = null;
+  }, 240);
+}
+
+slideshow.close.addEventListener("click", closeSlideshow);
+slideshow.autoplay.addEventListener("click", toggleSlideshowAutoplay);
 slideshow.previous.addEventListener("click", () => moveSlideshow(-1));
 slideshow.next.addEventListener("click", () => moveSlideshow(1));
 slideshow.dialog.addEventListener("keydown", event => {
@@ -129,9 +177,17 @@ slideshow.dialog.addEventListener("keydown", event => {
   else if (event.key === "ArrowRight") {event.preventDefault();moveSlideshow(1);}
 });
 slideshow.dialog.addEventListener("click", event => {
-  if (event.target === slideshow.dialog) slideshow.dialog.close();
+  if (event.target === slideshow.dialog) closeSlideshow();
+});
+slideshow.dialog.addEventListener("cancel", event => {
+  event.preventDefault();
+  closeSlideshow();
 });
 slideshow.dialog.addEventListener("close", () => {
+  window.clearTimeout(slideshowClosingTimer);
+  slideshowClosingTimer = null;
+  stopSlideshowAutoplay();
+  slideshow.dialog.classList.remove("is-visible");
   slideshow.image.removeAttribute("src");
   slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
   slideshowItems = [];
@@ -146,6 +202,7 @@ slideshow.stage.addEventListener("touchend", event => {
   swipeStartX = null;
   if (Math.abs(distance) >= 48) moveSlideshow(distance < 0 ? 1 : -1);
 }, { passive: true });
+slideshow.stage.addEventListener("touchcancel", () => { swipeStartX = null; }, { passive: true });
 
 function dateKey(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value) || !Number.isFinite(Date.parse(value))) return "unknown";
@@ -307,7 +364,7 @@ async function submitPhotoFeedback(postId, asset, button) {
   }
 }
 
-function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowSources=[]) {
+function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowItems=[], slideshowIndex=0) {
   const card = element("figure", "media-card");
   if (asset.userExcluded === true) card.classList.toggle("user-excluded", true);
   const url = mediaUrl(asset.path);
@@ -329,8 +386,8 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowSou
   image.src = url;
   const imageButton = element("button", "media-image-button");
   imageButton.type = "button";
-  imageButton.setAttribute("aria-label", `以幻燈片檢視第 ${photoIndex + 1} 張照片`);
-  imageButton.addEventListener("click", () => openSlideshow(slideshowSources, photoIndex));
+  imageButton.setAttribute("aria-label", `開啟幻燈片，第 ${slideshowIndex + 1} 張，共 ${slideshowItems.length} 張`);
+  imageButton.addEventListener("click", () => openSlideshow(slideshowItems, slideshowIndex));
   imageButton.append(image);
   card.append(imageButton);
   const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
@@ -372,7 +429,7 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowSou
   return card;
 }
 
-function postCard(post, displayedPhotos, monthAnchorId=null, latest=false) {
+function postCard(post, displayedPhotos, monthAnchorId=null, latest=false, slideshowItems=[], slideshowIndices=new Map()) {
   const article = element("article", "post-card");
   article.dataset.postId = post.id;
   if (monthAnchorId) article.id = monthAnchorId;
@@ -395,9 +452,9 @@ function postCard(post, displayedPhotos, monthAnchorId=null, latest=false) {
   header.append(heading);
   article.append(header);
   const grid = element("div", "media-grid");
-  const slideshowSources = displayedPhotos.map(({ asset }) => mediaUrl(asset.path));
   displayedPhotos.forEach(({ asset, result }, index) =>
-    grid.append(mediaCard(post.id, asset, result, index, sourcePhotoId(post, asset), slideshowSources)));
+    grid.append(mediaCard(post.id, asset, result, index, sourcePhotoId(post, asset), slideshowItems,
+      slideshowIndices.get(JSON.stringify([post.id, asset.id])) ?? 0)));
   article.append(grid);
   return article;
 }
@@ -504,6 +561,15 @@ function render() {
     if (date !== "unknown") firstPostByMonth.set(date.slice(0, 7), post.id);
   }
   const latestPostId = navEntries[0]?.post.id;
+  const slideshowItems = [...displayed].reverse().flatMap(entry => entry.photos.map(({ asset }) => ({
+    src: mediaUrl(asset.path),
+    title: entry.post.title || "照片貼文",
+    date: dateLabel(dateKey(entry.post.publishedAt)),
+    postId: entry.post.id,
+    assetId: asset.id,
+  }))).filter(item => item.src);
+  const slideshowIndices = new Map(slideshowItems.map((item, index) =>
+    [JSON.stringify([item.postId, item.assetId]), index]));
   ui.content.replaceChildren();
   if (displayed.length) {
     const list = element("div", "post-list");
@@ -511,7 +577,8 @@ function render() {
       const date = dateKey(entry.post.publishedAt);
       const month = date === "unknown" ? null : date.slice(0, 7);
       const monthAnchorId = month && firstPostByMonth.get(month) === entry.post.id ? `month-${month}` : null;
-      list.append(postCard(entry.post, entry.photos, monthAnchorId, entry.post.id === latestPostId));
+      list.append(postCard(entry.post, entry.photos, monthAnchorId, entry.post.id === latestPostId,
+        slideshowItems, slideshowIndices));
     });
     ui.content.append(list);
   } else ui.content.append(emptyState(allPhotos.length));
