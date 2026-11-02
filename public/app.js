@@ -9,6 +9,7 @@ const ui = {
   error: document.querySelector("#api-error"),
   refresh: document.querySelector("#refresh"),
   date: document.querySelector("#date-filter"),
+  monthNav: document.querySelector("#month-nav"),
   fetchForm: document.querySelector("#manual-fetch-form"),
   fetchControls: document.querySelector("#manual-fetch-controls"),
   fetchPreset: document.querySelector("#fetch-preset"),
@@ -306,8 +307,17 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
   return card;
 }
 
-function postCard(post, displayedPhotos) {
+function postCard(post, displayedPhotos, monthAnchorId=null, latest=false) {
   const article = element("article", "post-card");
+  article.dataset.postId = post.id;
+  if (monthAnchorId) article.id = monthAnchorId;
+  else if (latest) article.id = "latest-post";
+  if (monthAnchorId && latest) {
+    const latestAnchor = element("span", "post-anchor");
+    latestAnchor.id = "latest-post";
+    latestAnchor.setAttribute("aria-hidden", "true");
+    article.prepend(latestAnchor);
+  }
   article.dataset.photoLayout = displayedPhotos.length >= 3 ? "three-plus" : String(displayedPhotos.length);
   const header = element("div", "post-header");
   const heading = element("div", "post-heading");
@@ -333,6 +343,42 @@ function setFilter(value) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+}
+
+function updateMonthNavigation(entries) {
+  ui.monthNav.replaceChildren();
+  const latestPost = entries[0]?.post || null;
+  const addLink = (label, targetId) => {
+    const link = element("a", "nav-item archive-nav-item", label);
+    link.href = `#${targetId}`;
+    link.addEventListener("click", event => {
+      if (ui.date.value === "all") return;
+      event.preventDefault();
+      ui.date.value = "all";
+      render();
+      const target = document.getElementById(targetId);
+      if (target) {
+        const url = new URL(window.location.href);
+        url.hash = targetId;
+        window.history.replaceState(null, "", url);
+        target.scrollIntoView({ block: "start", behavior: "auto" });
+      }
+    });
+    ui.monthNav.append(link);
+  };
+  addLink("最新貼文", latestPost ? "latest-post" : "gallery");
+  const firstPostByMonth = new Map();
+  for (const { post } of entries) {
+    const date = dateKey(post.publishedAt);
+    if (date !== "unknown") {
+      const month = date.slice(0, 7);
+      if (!firstPostByMonth.has(month)) firstPostByMonth.set(month, post);
+    }
+  }
+  for (const [month] of firstPostByMonth) {
+    const [year, number] = month.split("-");
+    addLink(`${year} 年 ${Number(number)} 月`, `month-${month}`);
+  }
 }
 
 function emptyState(photoCount) {
@@ -366,16 +412,31 @@ function emptyState(photoCount) {
 function render() {
   if (!gallery) return;
   const allPhotos = gallery.posts.flatMap(photos);
+  const visiblePhotos = post => photos(post).filter(photo =>
+    photo.asset.userExcluded === true ? controlMode : filter === "all" || photo.result?.state === "candidate");
+  const navEntries = newestFirst(gallery.posts).map(post => ({ post, photos: visiblePhotos(post) }))
+    .filter(entry => entry.photos.length);
+  updateMonthNavigation(navEntries);
   const datePosts = newestFirst(gallery.posts.filter(post => ui.date.value === "all" || dateKey(post.publishedAt) === ui.date.value));
   const datePhotos = datePosts.flatMap(photos);
   document.querySelector("#count-all").textContent = datePhotos.filter(photo => controlMode || photo.asset.userExcluded !== true).length;
   document.querySelector("#count-candidate").textContent = datePhotos.filter(photo => photo.asset.userExcluded !== true && photo.result?.state === "candidate").length;
-  const displayed = datePosts.map(post => ({ post, photos: photos(post).filter(photo =>
-    photo.asset.userExcluded === true ? controlMode : filter === "all" || photo.result?.state === "candidate") })).filter(entry => entry.photos.length);
+  const displayed = navEntries.filter(entry => ui.date.value === "all" || dateKey(entry.post.publishedAt) === ui.date.value);
+  const firstPostByMonth = new Map();
+  for (const { post } of navEntries) {
+    const date = dateKey(post.publishedAt);
+    if (date !== "unknown" && !firstPostByMonth.has(date.slice(0, 7))) firstPostByMonth.set(date.slice(0, 7), post.id);
+  }
+  const latestPostId = navEntries[0]?.post.id;
   ui.content.replaceChildren();
   if (displayed.length) {
     const list = element("div", "post-list");
-    displayed.forEach(entry => list.append(postCard(entry.post, entry.photos)));
+    displayed.forEach(entry => {
+      const date = dateKey(entry.post.publishedAt);
+      const month = date === "unknown" ? null : date.slice(0, 7);
+      const monthAnchorId = month && firstPostByMonth.get(month) === entry.post.id ? `month-${month}` : null;
+      list.append(postCard(entry.post, entry.photos, monthAnchorId, entry.post.id === latestPostId));
+    });
     ui.content.append(list);
   } else ui.content.append(emptyState(allPhotos.length));
 }
