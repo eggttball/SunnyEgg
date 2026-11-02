@@ -367,9 +367,46 @@ async function inspectPost(profile,value,loadPlaywright) {
       const targetLink=[...main.querySelectorAll('a[href]')].find(link=>sameTarget(link.href));
       const matchingArticle=articles.find(node=>[...node.querySelectorAll('a[href]')].some(link=>sameTarget(link.href)) &&
         photoLinks(node).length>0);
-      let scope=matchingArticle;
       let directPageAlbum=null;
-      if(!scope && targetLink) {
+      let scope=null;
+      if(currentIsTarget) {
+        const pagePhotos=photoLinks(document.body),groups=new Map();
+        for(const link of pagePhotos) {
+          const url=new URL(link.href),photoId=url.searchParams.get('fbid'),set=url.searchParams.get('set') || '';
+          const key=set ? `set:${set}` : `photo:${photoId}`;
+          if(!groups.has(key)) groups.set(key,[]);
+          groups.get(key).push(link);
+        }
+        const title=document.title || '';
+        const separator=title.indexOf(' - ');
+        const postTitle=separator>=0 ? title.slice(separator+3).replace(/\s*\|\s*Facebook.*$/,'') : '';
+        const normalizeText=value=>value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
+        const titleKey=normalizeText(postTitle).slice(0,12);
+        const titleMatches=[];
+        if(titleKey.length>=6) {
+          for(const [key,links] of groups) {
+            let container=links[0];
+            while(container && container!==document.body && !links.every(link=>container.contains(link))) container=container.parentElement;
+            let depth=0,matchedDepth=null;
+            for(let node=container;node;node=node.parentElement,depth++) {
+              if(normalizeText(node.innerText || '').includes(titleKey)) {matchedDepth=depth;break;}
+              if(node===main || depth>=12) break;
+            }
+            if(matchedDepth!==null) titleMatches.push({key,links,container,depth:matchedDepth});
+          }
+        }
+        if(titleMatches.length) {
+          const nearest=Math.min(...titleMatches.map(match=>match.depth));
+          const best=titleMatches.filter(match=>match.depth===nearest);
+          if(best.length===1) directPageAlbum={...best[0],videoCount:best[0].container.querySelectorAll('video').length};
+        } else if(groups.size===1) {
+          const [key,links]=groups.entries().next().value;
+          let container=links[0];
+          while(container && container!==document.body && !links.every(link=>container.contains(link))) container=container.parentElement;
+          directPageAlbum={key,links,container,depth:null,videoCount:container?.querySelectorAll('video').length || 0};
+        }
+      } else scope=matchingArticle;
+      if(!currentIsTarget && !scope && targetLink) {
         // Single-post pages can render the post in ordinary divs rather than
         // an article/feed unit. Stay close to the permalink and stop at the
         // first ancestor that contains an FB photo link.
@@ -377,31 +414,14 @@ async function inspectPost(profile,value,loadPlaywright) {
           if(photoLinks(node).length) {scope=node;break;}
         }
       }
-      if(!scope && currentIsTarget) {
-        // On some permalink layouts Facebook places the post's permalink and
-        // its photo grid in separate DOM branches. Accept the page-level grid
-        // only when every visible photo link belongs to the same album set;
-        // mixed grids could include recommendations or neighboring posts.
-        const pagePhotos=photoLinks(document.body);
-        const groups=new Map();
-        for(const link of pagePhotos) {
-          const url=new URL(link.href);
-          const photoId=url.searchParams.get('fbid');
-          const set=url.searchParams.get('set') || '';
-          const key=set ? `set:${set}` : `photo:${photoId}`;
-          if(!groups.has(key)) groups.set(key,[]);
-          groups.get(key).push(link);
-        }
-        if(groups.size===1) directPageAlbum=[...groups.values()][0];
-      }
       const photos=[];
-      for(const link of directPageAlbum || (scope ? photoLinks(scope) : [])) {
+      for(const link of directPageAlbum?.links || (scope ? photoLinks(scope) : [])) {
         const url=new URL(link.href);
         const ids=url.searchParams.getAll('fbid');
-        photos.push({photoId:ids[0],href:url.href});
+        photos.push({photoId:ids[0],href:url.href,hasMorePhotos:/^\+\d+$/.test(link.innerText.trim())});
       }
       const unique=[...new Map(photos.map(photo=>[photo.photoId,photo])).values()];
-      const postContainer=scope || matchingArticle || targetLink?.parentElement || (directPageAlbum ? null : main);
+      const postContainer=directPageAlbum?.container || scope || matchingArticle || targetLink?.parentElement || main;
       const linkedPageId=[...(postContainer?.querySelectorAll('a[href]') || [])].map(link=>{
         try {
           const url=new URL(link.href);
@@ -414,7 +434,7 @@ async function inspectPost(profile,value,loadPlaywright) {
         unavailable:/內容暫時無法顯示|此內容目前無法查看|This content isn't available/.test(text),
         articleFound:!!matchingArticle || !!targetLink || currentIsTarget,photos:unique,
         pageId:expected.pageId || linkedPageId || null,publishedAt,
-        videoCount:directPageAlbum ? 0 : scope?.querySelectorAll('video').length || 0};
+        videoCount:directPageAlbum?.videoCount ?? scope?.querySelectorAll('video').length ?? 0};
     },target);
     if(observed.loginForm || !observed.authenticated) throw new CollectorError('login_required');
     if(observed.unavailable || !observed.articleFound) throw new CollectorError('post_unavailable');
@@ -441,7 +461,10 @@ async function collectPostPhotos(profile,value,loadPlaywright,progressId=null) {
       if(url.protocol!=='https:' || !['facebook.com','www.facebook.com','m.facebook.com'].includes(url.hostname) ||
           !['/photo/','/photo','/photo.php'].includes(url.pathname) || !/^\d+$/.test(photoId || '')) throw new Error();
       const key=set ? `set:${set}` : `photo:${photoId}`;
-      if(!groups.has(key)) groups.set(key,{href:url.href,set});
+      if(!groups.has(key)) groups.set(key,{href:url.href,set,seedPhotos:new Map(),hasMorePhotos:false});
+      const group=groups.get(key);
+      group.seedPhotos.set(photoId,url.href);
+      group.hasMorePhotos ||= seed.hasMorePhotos===true;
     } catch {throw new CollectorError('album_incomplete');}
   }
   const context=await contextFor(profile,false,loadPlaywright);
@@ -450,17 +473,6 @@ async function collectPostPhotos(profile,value,loadPlaywright,progressId=null) {
     const page=context.pages()[0] || await context.newPage();
     await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:0});
     for(const group of groups.values()) {
-      await navigate(page,group.href);
-      await page.waitForFunction(()=>{
-        const id=new URL(location.href).searchParams.get('fbid');
-        return /^\d+$/.test(id || '') && [...document.querySelectorAll('img')].some(image=>{
-          try {
-            const url=new URL(image.currentSrc || image.src);
-            return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
-              (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com'));
-          } catch {return false;}
-        });
-      },null,{timeout:15000}).catch(()=>{});
       const readPhoto=()=>page.evaluate(()=>{
         const photoId=new URL(location.href).searchParams.get('fbid');
         const images=[...document.querySelectorAll('img')].filter(image=>{
@@ -475,61 +487,102 @@ async function collectPostPhotos(profile,value,loadPlaywright,progressId=null) {
           width:image?.naturalWidth || 0,height:image?.naturalHeight || 0,
           set:new URL(location.href).searchParams.get('set') || ''};
       });
-      let current=await readPhoto();
-      if(!/^\d+$/.test(current.photoId || '') || !current.sourceUrl) throw new CollectorError('album_incomplete');
-      const startId=current.photoId,localSeen=new Set();
-      while(true) {
-        if(localSeen.has(current.photoId)) {
-          if(current.photoId===startId) break;
-          throw new CollectorError('album_incomplete');
-        }
-        localSeen.add(current.photoId);
-        const previous=photos.get(current.photoId);
-        if(previous && previous.sourceUrl!==current.sourceUrl) {
-          // One photo can appear in multiple visual groups; retain the newest URL.
-          photos.set(current.photoId,current);
-        } else if(!previous) photos.set(current.photoId,current);
-        if(photos.size>MAX_POST_PHOTOS) throw new CollectorError('album_limit');
-        await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:photos.size});
-
-        const selectors=['button[aria-label="下一張相片"]','[role="button"][aria-label="下一張相片"]',
-          'button[aria-label="Next photo"]','[role="button"][aria-label="Next photo"]'];
-        let next=null;
-        for(const selector of selectors) {
-          const choices=page.locator(selector);
-          for(let index=0;index<await choices.count();index++) {
-            const candidate=choices.nth(index);
-            if(await candidate.isVisible().catch(()=>false)) {next=candidate;break;}
-          }
-          if(next) break;
-        }
-        if(!next) {
-          if(group.set.startsWith('a.') || group.set.startsWith('pcb.')) throw new CollectorError('album_incomplete');
-          break;
-        }
-        const disabled=await next.getAttribute('aria-disabled').then(value=>value==='true').catch(()=>false) ||
-          await next.isDisabled().catch(()=>false);
-        if(disabled) break;
-        if(photos.size>=MAX_POST_PHOTOS) throw new CollectorError('album_limit');
-        const before={photoId:current.photoId,sourceUrl:current.sourceUrl};
-        try {await next.click({timeout:5000});}
-        catch {throw new CollectorError('album_incomplete');}
-        const advanced=await page.waitForFunction(({photoId,sourceUrl})=>{
-          const currentId=new URL(location.href).searchParams.get('fbid');
-          if(!currentId || currentId===photoId) return false;
-          return [...document.querySelectorAll('img')].some(image=>{
+      const groupPhotos=new Map();
+      try {
+        await navigate(page,group.href);
+        await page.waitForFunction(()=>{
+          const id=new URL(location.href).searchParams.get('fbid');
+          return /^\d+$/.test(id || '') && [...document.querySelectorAll('img')].some(image=>{
             try {
               const url=new URL(image.currentSrc || image.src);
               return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
-                (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com')) &&
-                (image.currentSrc || image.src)!==sourceUrl;
+                (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com'));
             } catch {return false;}
           });
-        },before,{timeout:15000}).then(()=>true).catch(()=>false);
-        if(!advanced) throw new CollectorError('album_incomplete');
-        current=await readPhoto();
-        if(current.photoId===startId) break;
+        },null,{timeout:15000}).catch(()=>{});
+        let current=await readPhoto();
         if(!/^\d+$/.test(current.photoId || '') || !current.sourceUrl) throw new CollectorError('album_incomplete');
+        const startId=current.photoId,localSeen=new Set();
+        while(true) {
+          if(localSeen.has(current.photoId)) {
+            if(current.photoId===startId) break;
+            throw new CollectorError('album_incomplete');
+          }
+          localSeen.add(current.photoId);
+          const previous=groupPhotos.get(current.photoId);
+          if(previous && previous.sourceUrl!==current.sourceUrl) groupPhotos.set(current.photoId,current);
+          else if(!previous) groupPhotos.set(current.photoId,current);
+          if(photos.size+groupPhotos.size>MAX_POST_PHOTOS) throw new CollectorError('album_limit');
+          await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:photos.size+groupPhotos.size});
+
+          const selectors=['button[aria-label="下一張相片"]','[role="button"][aria-label="下一張相片"]',
+            'button[aria-label="Next photo"]','[role="button"][aria-label="Next photo"]'];
+          let next=null;
+          for(const selector of selectors) {
+            const choices=page.locator(selector);
+            for(let index=0;index<await choices.count();index++) {
+              const candidate=choices.nth(index);
+              if(await candidate.isVisible().catch(()=>false)) {next=candidate;break;}
+            }
+            if(next) break;
+          }
+          if(!next) {
+            if(group.set.startsWith('a.') || group.set.startsWith('pcb.')) throw new CollectorError('album_incomplete');
+            break;
+          }
+          const disabled=await next.getAttribute('aria-disabled').then(value=>value==='true').catch(()=>false) ||
+            await next.isDisabled().catch(()=>false);
+          if(disabled) break;
+          if(photos.size+groupPhotos.size>=MAX_POST_PHOTOS) throw new CollectorError('album_limit');
+          const before={photoId:current.photoId,sourceUrl:current.sourceUrl};
+          try {await next.click({timeout:5000});}
+          catch {throw new CollectorError('album_incomplete');}
+          const transition=await page.waitForFunction(({photoId,sourceUrl})=>{
+            const locationUrl=new URL(location.href);
+            if(/\/videos?\//.test(locationUrl.pathname)) return 'non_photo';
+            const currentId=locationUrl.searchParams.get('fbid');
+            if(!currentId || currentId===photoId) return false;
+            const hasNewImage=[...document.querySelectorAll('img')].some(image=>{
+              try {
+                const url=new URL(image.currentSrc || image.src);
+                return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
+                  (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com')) &&
+                  (image.currentSrc || image.src)!==sourceUrl;
+              } catch {return false;}
+            });
+            return hasNewImage ? 'photo' : false;
+          },before,{timeout:15000}).then(handle=>handle.jsonValue()).catch(()=>null);
+          if(transition!=='photo') throw new CollectorError('album_incomplete');
+          current=await readPhoto();
+          if(current.photoId===startId) break;
+          if(!/^\d+$/.test(current.photoId || '') || !current.sourceUrl) throw new CollectorError('album_incomplete');
+        }
+      } catch(error) {
+        if(!(error instanceof CollectorError) || error.reason!=='album_incomplete' || group.hasMorePhotos) throw error;
+        groupPhotos.clear();
+        await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:photos.size});
+        for(const [photoId,href] of group.seedPhotos) {
+          await navigate(page,href);
+          await page.waitForFunction(expectedId=>{
+            const id=new URL(location.href).searchParams.get('fbid');
+            return id===expectedId && [...document.querySelectorAll('img')].some(image=>{
+              try {
+                const url=new URL(image.currentSrc || image.src);
+                return image.complete && image.naturalWidth>=300 && image.naturalHeight>=250 &&
+                  (url.hostname.endsWith('.fbcdn.net') || url.hostname.endsWith('.fbsbx.com'));
+              } catch {return false;}
+            });
+          },photoId,{timeout:15000}).catch(()=>{});
+          const photo=await readPhoto();
+          if(photo.photoId!==photoId || !photo.sourceUrl) throw new CollectorError('album_incomplete');
+          groupPhotos.set(photoId,photo);
+          await writeDiscoveryProgress(progressId,{phase:'collecting',currentPhoto:photos.size+groupPhotos.size});
+        }
+      }
+      for(const [photoId,photo] of groupPhotos) {
+        const previous=photos.get(photoId);
+        if(!previous || previous.sourceUrl!==photo.sourceUrl) photos.set(photoId,photo);
+        if(photos.size>MAX_POST_PHOTOS) throw new CollectorError('album_limit');
       }
     }
   } finally {await context.close();}
