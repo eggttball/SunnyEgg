@@ -63,6 +63,7 @@ html{scroll-behavior:smooth}
 .photo-viewer-image.effect-slide-y-next{opacity:0;transform:translateY(32px)}
 .photo-viewer-image.effect-slide-y-previous{opacity:0;transform:translateY(-32px)}
 .photo-viewer-image.effect-blur{opacity:0;filter:blur(12px)}
+.photo-viewer-image.effect-transition-setup{transition:none!important}
 .photo-viewer-arrow{width:48px;height:48px;border-radius:50%;font-size:35px;line-height:1}
 .photo-viewer-close:hover,.photo-viewer-arrow:hover:not(:disabled),.photo-viewer-autoplay:hover:not(:disabled){background:#ffffff2c}
 .photo-viewer-arrow:disabled,.photo-viewer-autoplay:disabled{cursor:default;opacity:.4}

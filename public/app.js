@@ -59,6 +59,7 @@ let slideshowIndex = 0;
 let swipeStartX = null;
 let slideshowTimer = null;
 let slideshowClosingTimer = null;
+let slideshowEffectSequence = 0;
 const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur"];
 let previousSlideshowEffect = null;
 const publishedDateFormatter = new Intl.DateTimeFormat("en-CA", {
@@ -98,6 +99,7 @@ function mediaUrl(path) {
 
 function showSlideshowImage(direction=0) {
   if (!slideshowItems.length) return;
+  const effectSequence = ++slideshowEffectSequence;
   const item = slideshowItems[slideshowIndex];
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const effectName = direction && !reduceMotion ? randomSlideshowEffect() : null;
@@ -107,9 +109,10 @@ function showSlideshowImage(direction=0) {
       ? `effect-slide-y-${direction > 0 ? "next" : "previous"}`
       : effectName ? `effect-${effectName}` : null;
   slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
-    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous");
+    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous",
+    "effect-transition-setup");
   if (effectClass) {
-    slideshow.image.classList.add(effectClass);
+    slideshow.image.classList.add("effect-transition-setup", effectClass);
     void slideshow.image.offsetWidth;
   }
   slideshow.image.src = item.src;
@@ -121,7 +124,14 @@ function showSlideshowImage(direction=0) {
   slideshow.next.disabled = slideshowItems.length < 2;
   slideshow.autoplay.disabled = slideshowItems.length < 2;
   if (effectClass) {
-    requestAnimationFrame(() => slideshow.image.classList.remove(effectClass));
+    requestAnimationFrame(() => {
+      if (effectSequence !== slideshowEffectSequence) return;
+      slideshow.image.classList.remove("effect-transition-setup");
+      requestAnimationFrame(() => {
+        if (effectSequence !== slideshowEffectSequence) return;
+        slideshow.image.classList.remove(effectClass);
+      });
+    });
   }
 }
 
@@ -172,6 +182,7 @@ function toggleSlideshowAutoplay() {
 
 function closeSlideshow() {
   if (!slideshow.dialog.open) return;
+  slideshowEffectSequence++;
   stopSlideshowAutoplay();
   slideshow.dialog.classList.remove("is-visible");
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -201,13 +212,15 @@ slideshow.dialog.addEventListener("cancel", event => {
   closeSlideshow();
 });
 slideshow.dialog.addEventListener("close", () => {
+  slideshowEffectSequence++;
   window.clearTimeout(slideshowClosingTimer);
   slideshowClosingTimer = null;
   stopSlideshowAutoplay();
   slideshow.dialog.classList.remove("is-visible");
   slideshow.image.removeAttribute("src");
   slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
-    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous");
+    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous",
+    "effect-transition-setup");
   previousSlideshowEffect = null;
   slideshowItems = [];
   slideshowIndex = 0;
