@@ -59,6 +59,8 @@ let slideshowIndex = 0;
 let swipeStartX = null;
 let slideshowTimer = null;
 let slideshowClosingTimer = null;
+const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur"];
+let previousSlideshowEffect = null;
 const publishedDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -97,10 +99,17 @@ function mediaUrl(path) {
 function showSlideshowImage(direction=0) {
   if (!slideshowItems.length) return;
   const item = slideshowItems[slideshowIndex];
-  const motionClass = direction > 0 ? "slide-from-next" : direction < 0 ? "slide-from-previous" : null;
-  slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
-  if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    slideshow.image.classList.add(motionClass);
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const effectName = direction && !reduceMotion ? randomSlideshowEffect() : null;
+  const effectClass = effectName === "slide-x"
+    ? `effect-slide-x-${direction > 0 ? "next" : "previous"}`
+    : effectName === "slide-y"
+      ? `effect-slide-y-${direction > 0 ? "next" : "previous"}`
+      : effectName ? `effect-${effectName}` : null;
+  slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
+    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous");
+  if (effectClass) {
+    slideshow.image.classList.add(effectClass);
     void slideshow.image.offsetWidth;
   }
   slideshow.image.src = item.src;
@@ -111,9 +120,16 @@ function showSlideshowImage(direction=0) {
   slideshow.previous.disabled = slideshowItems.length < 2;
   slideshow.next.disabled = slideshowItems.length < 2;
   slideshow.autoplay.disabled = slideshowItems.length < 2;
-  if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    requestAnimationFrame(() => slideshow.image.classList.remove(motionClass));
+  if (effectClass) {
+    requestAnimationFrame(() => slideshow.image.classList.remove(effectClass));
   }
+}
+
+function randomSlideshowEffect() {
+  const available = slideshowEffectNames.filter(effect => effect !== previousSlideshowEffect);
+  const selected = available[Math.floor(Math.random() * available.length)];
+  previousSlideshowEffect = selected;
+  return selected;
 }
 
 function moveSlideshow(direction) {
@@ -129,6 +145,7 @@ function openSlideshow(items, index) {
   if (!slideshowItems.length) return;
   window.clearTimeout(slideshowClosingTimer);
   slideshowClosingTimer = null;
+  previousSlideshowEffect = null;
   stopSlideshowAutoplay();
   showSlideshowImage();
   if (!slideshow.dialog.open) slideshow.dialog.showModal();
@@ -150,7 +167,7 @@ function toggleSlideshowAutoplay() {
   if (slideshowItems.length < 2) return;
   slideshow.autoplay.textContent = "Ⅱ 暫停播放";
   slideshow.autoplay.setAttribute("aria-pressed", "true");
-  slideshowTimer = window.setInterval(() => moveSlideshow(1), 4000);
+  slideshowTimer = window.setInterval(() => moveSlideshow(1), 3000);
 }
 
 function closeSlideshow() {
@@ -189,7 +206,9 @@ slideshow.dialog.addEventListener("close", () => {
   stopSlideshowAutoplay();
   slideshow.dialog.classList.remove("is-visible");
   slideshow.image.removeAttribute("src");
-  slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
+  slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
+    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous");
+  previousSlideshowEffect = null;
   slideshowItems = [];
   slideshowIndex = 0;
 });
