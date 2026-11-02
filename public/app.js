@@ -26,6 +26,15 @@ const ui = {
   manualPhotoSubmit: document.querySelector("#manual-photo-submit"),
   manualPhotoStatus: document.querySelector("#manual-photo-status"),
 };
+const slideshow = {
+  dialog: document.querySelector("#photo-viewer"),
+  image: document.querySelector("#photo-viewer-image"),
+  count: document.querySelector("#photo-viewer-count"),
+  stage: document.querySelector("#photo-viewer-stage"),
+  close: document.querySelector("#photo-viewer-close"),
+  previous: document.querySelector("#photo-viewer-previous"),
+  next: document.querySelector("#photo-viewer-next"),
+};
 let gallery = null;
 let galleryRequestId = 0;
 let filter = "candidate";
@@ -42,6 +51,9 @@ const feedbackBusy = new Set();
 const feedbackErrors = new Map();
 let logicalGallery = null;
 let logicalPhotoIndex = new Map();
+let slideshowItems = [];
+let slideshowIndex = 0;
+let swipeStartX = null;
 const publishedDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
 });
@@ -76,6 +88,64 @@ function mediaUrl(path) {
   if (parts.some(part => !part || part === "." || part === "..")) return null;
   return `/${parts.map(encodeURIComponent).join("/")}`;
 }
+
+function showSlideshowImage(direction=0) {
+  if (!slideshowItems.length) return;
+  const motionClass = direction > 0 ? "slide-from-next" : direction < 0 ? "slide-from-previous" : null;
+  slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
+  if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    slideshow.image.classList.add(motionClass);
+    void slideshow.image.offsetWidth;
+  }
+  slideshow.image.src = slideshowItems[slideshowIndex];
+  slideshow.count.textContent = `${slideshowIndex + 1} / ${slideshowItems.length}`;
+  slideshow.previous.disabled = slideshowItems.length < 2;
+  slideshow.next.disabled = slideshowItems.length < 2;
+  if (motionClass && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    requestAnimationFrame(() => slideshow.image.classList.remove(motionClass));
+  }
+}
+
+function moveSlideshow(direction) {
+  if (slideshowItems.length < 2) return;
+  slideshowIndex = (slideshowIndex + direction + slideshowItems.length) % slideshowItems.length;
+  showSlideshowImage(direction);
+}
+
+function openSlideshow(items, index) {
+  const selected = items[index];
+  slideshowItems = items.filter(item => typeof item === "string");
+  slideshowIndex = Math.max(0, slideshowItems.indexOf(selected));
+  if (!slideshowItems.length) return;
+  showSlideshowImage();
+  if (!slideshow.dialog.open) slideshow.dialog.showModal();
+}
+
+slideshow.close.addEventListener("click", () => slideshow.dialog.close());
+slideshow.previous.addEventListener("click", () => moveSlideshow(-1));
+slideshow.next.addEventListener("click", () => moveSlideshow(1));
+slideshow.dialog.addEventListener("keydown", event => {
+  if (event.key === "ArrowLeft") {event.preventDefault();moveSlideshow(-1);}
+  else if (event.key === "ArrowRight") {event.preventDefault();moveSlideshow(1);}
+});
+slideshow.dialog.addEventListener("click", event => {
+  if (event.target === slideshow.dialog) slideshow.dialog.close();
+});
+slideshow.dialog.addEventListener("close", () => {
+  slideshow.image.removeAttribute("src");
+  slideshow.image.classList.remove("slide-from-next", "slide-from-previous");
+  slideshowItems = [];
+  slideshowIndex = 0;
+});
+slideshow.stage.addEventListener("touchstart", event => {
+  swipeStartX = event.touches.length === 1 ? event.touches[0].clientX : null;
+}, { passive: true });
+slideshow.stage.addEventListener("touchend", event => {
+  if (swipeStartX === null || !event.changedTouches.length) return;
+  const distance = event.changedTouches[0].clientX - swipeStartX;
+  swipeStartX = null;
+  if (Math.abs(distance) >= 48) moveSlideshow(distance < 0 ? 1 : -1);
+}, { passive: true });
 
 function dateKey(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value) || !Number.isFinite(Date.parse(value))) return "unknown";
@@ -237,7 +307,7 @@ async function submitPhotoFeedback(postId, asset, button) {
   }
 }
 
-function mediaCard(postId, asset, result, photoIndex, photoId=null) {
+function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowSources=[]) {
   const card = element("figure", "media-card");
   if (asset.userExcluded === true) card.classList.toggle("user-excluded", true);
   const url = mediaUrl(asset.path);
@@ -257,19 +327,14 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null) {
     card.prepend(message);
   });
   image.src = url;
+  const imageButton = element("button", "media-image-button");
+  imageButton.type = "button";
+  imageButton.setAttribute("aria-label", `以幻燈片檢視第 ${photoIndex + 1} 張照片`);
+  imageButton.addEventListener("click", () => openSlideshow(slideshowSources, photoIndex));
+  imageButton.append(image);
+  card.append(imageButton);
   const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
     ? photoId : null;
-  if (candidatePhotoId) {
-    const originalUrl = "https://www.facebook.com/photo/?fbid=" + encodeURIComponent(candidatePhotoId);
-    const imageLink = element("a", "media-source-image-link");
-    imageLink.href = originalUrl;
-    imageLink.target = "_blank";
-    imageLink.rel = "noopener noreferrer";
-    imageLink.setAttribute("aria-label", "在新分頁開啟這張照片的 Facebook 原照");
-    imageLink.title = "在 Facebook 查看原照片";
-    imageLink.append(image);
-    card.append(imageLink);
-  } else card.append(image);
   const caption = element("figcaption", "media-caption");
   if (candidatePhotoId) {
     const originalLink = element("a", "photo-source-link", "查看原照片 ↗");
@@ -330,8 +395,9 @@ function postCard(post, displayedPhotos, monthAnchorId=null, latest=false) {
   header.append(heading);
   article.append(header);
   const grid = element("div", "media-grid");
+  const slideshowSources = displayedPhotos.map(({ asset }) => mediaUrl(asset.path));
   displayedPhotos.forEach(({ asset, result }, index) =>
-    grid.append(mediaCard(post.id, asset, result, index, sourcePhotoId(post, asset))));
+    grid.append(mediaCard(post.id, asset, result, index, sourcePhotoId(post, asset), slideshowSources)));
   article.append(grid);
   return article;
 }

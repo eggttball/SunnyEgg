@@ -73,5 +73,19 @@
         <footer class="main-footer"><span>荷包蛋 <span aria-hidden="true">✳</span> 留住小小的美好</span><a class="back-to-top" href="#page-top">回到頁首 ↑</a></footer>
       </main>
     </div>
+    <dialog id="photo-viewer" class="photo-viewer" aria-labelledby="photo-viewer-title">
+      <div class="photo-viewer-content">
+        <header class="photo-viewer-toolbar">
+          <h2 id="photo-viewer-title" class="visually-hidden">照片幻燈片</h2>
+          <span id="photo-viewer-count" class="photo-viewer-count" aria-live="polite"></span>
+          <button id="photo-viewer-close" class="photo-viewer-close" type="button" aria-label="關閉幻燈片" autofocus>×</button>
+        </header>
+        <div id="photo-viewer-stage" class="photo-viewer-stage">
+          <button id="photo-viewer-previous" class="photo-viewer-arrow" type="button" aria-label="上一張照片">‹</button>
+          <img id="photo-viewer-image" class="photo-viewer-image" alt="照片幻燈片">
+          <button id="photo-viewer-next" class="photo-viewer-arrow" type="button" aria-label="下一張照片">›</button>
+        </div>
+      </div>
+    </dialog>
   </body>
 </html>
