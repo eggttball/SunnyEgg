@@ -37,3 +37,5 @@
 .post-anchor{display:block;height:0}
 .sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto}
 @media(max-width:760px){.sidebar{position:static;height:auto;overflow:visible}.month-nav{flex:1;min-width:0;max-width:60vw;max-height:none;overflow-x:auto;overflow-y:hidden;white-space:nowrap}.archive-nav-item{flex:0 0 auto;font-size:10px;padding:8px}}
+html{scroll-behavior:smooth}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
