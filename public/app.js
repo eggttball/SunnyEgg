@@ -351,19 +351,6 @@ function updateMonthNavigation(entries) {
   const addLink = (label, targetId) => {
     const link = element("a", "nav-item archive-nav-item", label);
     link.href = `#${targetId}`;
-    link.addEventListener("click", event => {
-      if (ui.date.value === "all") return;
-      event.preventDefault();
-      ui.date.value = "all";
-      render();
-      const target = document.getElementById(targetId);
-      if (target) {
-        const url = new URL(window.location.href);
-        url.hash = targetId;
-        window.history.replaceState(null, "", url);
-        target.scrollIntoView({ block: "start", behavior: "auto" });
-      }
-    });
     ui.monthNav.append(link);
   };
   addLink("最新貼文", latestPost ? "latest-post" : "gallery");
@@ -388,7 +375,7 @@ function emptyState(photoCount) {
   illustration.append(element("span", "photo-shape"), element("span", "photo-shape photo-front"), element("span", "sparkle", "✳"));
   section.append(illustration);
   if (filter === "candidate") {
-    section.append(element("h3", "", ui.date.value === "all" ? "目前沒有候選照片" : "這個日期沒有候選照片"));
+    section.append(element("h3", "", ui.date.value === "all" ? "目前沒有候選照片" : "這個範圍沒有候選照片"));
     section.append(element("p", "", photoCount ? "可以查看本機保留照片，確認既有照片的比對結果。新抓取的照片只有候選會保留；逐篇檢查紀錄會列出比對數量。" : "新抓取的照片只有候選會加入相簿；沒有保留照片不代表尚未檢查。請查看上方逐篇照片檢查紀錄。"));
     if (photoCount && controlMode) {
       const inspect = element("button", "button", "查看本機保留照片");
@@ -397,10 +384,10 @@ function emptyState(photoCount) {
       section.append(inspect);
     }
   } else {
-    section.append(element("h3", "", photoCount ? "這個日期沒有照片" : "相簿，正等著第一個小日常"));
-    section.append(element("p", "", photoCount ? "試試其他日期，看看已保留的照片。" : "目前尚未加入照片。每日照片流程完成後，可在這裡查看候選與已保留的照片。"));
+    section.append(element("h3", "", photoCount ? "這個範圍沒有照片" : "相簿，正等著第一個小日常"));
+    section.append(element("p", "", photoCount ? "試試其他範圍，看看已保留的照片。" : "目前尚未加入照片。每日照片流程完成後，可在這裡查看候選與已保留的照片。"));
     if (photoCount) {
-      const reset = element("button", "button", "查看所有日期");
+      const reset = element("button", "button", "查看所有貼文");
       reset.type = "button";
       reset.addEventListener("click", () => { ui.date.value = "all"; render(); });
       section.append(reset);
@@ -409,19 +396,40 @@ function emptyState(photoCount) {
   return section;
 }
 
+function monthNumber(value) {
+  const [year, month] = value.split("-").map(Number);
+  return year * 12 + month - 1;
+}
+
+function monthsForFilter() {
+  const months = [...new Set(gallery.posts.filter(post => photos(post).length)
+    .map(post => dateKey(post.publishedAt)).filter(date => date !== "unknown").map(date => date.slice(0, 7)))].sort().reverse();
+  if (ui.date.value === "all") return new Set(months);
+  const count = Number(ui.date.value);
+  if (![1, 2, 3, 6].includes(count) || !months.length) return new Set(months);
+  const cutoff = monthNumber(months[0]) - count + 1;
+  return new Set(months.filter(month => monthNumber(month) >= cutoff));
+}
+
 function render() {
   if (!gallery) return;
   const allPhotos = gallery.posts.flatMap(photos);
+  const includedMonths = monthsForFilter();
+  const inSelectedRange = post => {
+    if (ui.date.value === "all") return true;
+    const date = dateKey(post.publishedAt);
+    return date !== "unknown" && includedMonths.has(date.slice(0, 7));
+  };
   const visiblePhotos = post => photos(post).filter(photo =>
     photo.asset.userExcluded === true ? controlMode : filter === "all" || photo.result?.state === "candidate");
   const navEntries = newestFirst(gallery.posts).map(post => ({ post, photos: visiblePhotos(post) }))
-    .filter(entry => entry.photos.length);
+    .filter(entry => entry.photos.length && inSelectedRange(entry.post));
   updateMonthNavigation(navEntries);
-  const datePosts = newestFirst(gallery.posts.filter(post => ui.date.value === "all" || dateKey(post.publishedAt) === ui.date.value));
+  const datePosts = newestFirst(gallery.posts.filter(inSelectedRange));
   const datePhotos = datePosts.flatMap(photos);
   document.querySelector("#count-all").textContent = datePhotos.filter(photo => controlMode || photo.asset.userExcluded !== true).length;
   document.querySelector("#count-candidate").textContent = datePhotos.filter(photo => photo.asset.userExcluded !== true && photo.result?.state === "candidate").length;
-  const displayed = navEntries.filter(entry => ui.date.value === "all" || dateKey(entry.post.publishedAt) === ui.date.value);
+  const displayed = navEntries;
   const firstPostByMonth = new Map();
   for (const { post } of navEntries) {
     const date = dateKey(post.publishedAt);
@@ -543,11 +551,7 @@ function updateJobStatus() {
 }
 
 function updateMetadata() {
-  const currentDate = ui.date.value;
-  ui.date.replaceChildren(new Option("所有日期", "all"));
-  const dates = [...new Set(gallery.posts.filter(post => photos(post).length).map(post => dateKey(post.publishedAt)))].sort((a, b) => a === "unknown" ? 1 : b === "unknown" ? -1 : b.localeCompare(a));
-  dates.forEach(date => ui.date.append(new Option(dateLabel(date), date)));
-  ui.date.value = dates.includes(currentDate) ? currentDate : "all";
+  if (!["all", "1", "2", "3", "6"].includes(ui.date.value)) ui.date.value = "all";
   const fetchStatus = gallery.fetchStatus || {};
   ui.status.replaceChildren();
   ui.status.hidden = !controlMode || (!fetchStatus.message && fetchStatus.state !== "blocked");
