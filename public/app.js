@@ -60,7 +60,13 @@ let swipeStartX = null;
 let slideshowTimer = null;
 let slideshowClosingTimer = null;
 let slideshowEffectSequence = 0;
-const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur"];
+const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur", "rotate", "flip", "wipe-x", "wipe-y"];
+const slideshowDirectionalEffectNames = ["slide-x", "slide-y", "rotate", "flip", "wipe-x", "wipe-y"];
+const slideshowEffectClasses = [
+  ...slideshowEffectNames.map(name => `effect-${name}`),
+  ...slideshowDirectionalEffectNames.flatMap(name => [`effect-${name}-next`, `effect-${name}-previous`]),
+  "effect-transition-setup",
+];
 let previousSlideshowEffect = null;
 const publishedDateFormatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
@@ -103,14 +109,10 @@ function showSlideshowImage(direction=0) {
   const item = slideshowItems[slideshowIndex];
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const effectName = direction && !reduceMotion ? randomSlideshowEffect() : null;
-  const effectClass = effectName === "slide-x"
-    ? `effect-slide-x-${direction > 0 ? "next" : "previous"}`
-    : effectName === "slide-y"
-      ? `effect-slide-y-${direction > 0 ? "next" : "previous"}`
-      : effectName ? `effect-${effectName}` : null;
-  slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
-    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous",
-    "effect-transition-setup");
+  const effectClass = effectName && slideshowDirectionalEffectNames.includes(effectName)
+    ? `effect-${effectName}-${direction > 0 ? "next" : "previous"}`
+    : effectName ? `effect-${effectName}` : null;
+  slideshow.image.classList.remove(...slideshowEffectClasses);
   if (effectClass) {
     slideshow.image.classList.add("effect-transition-setup", effectClass);
     void slideshow.image.offsetWidth;
@@ -218,9 +220,7 @@ slideshow.dialog.addEventListener("close", () => {
   stopSlideshowAutoplay();
   slideshow.dialog.classList.remove("is-visible");
   slideshow.image.removeAttribute("src");
-  slideshow.image.classList.remove(...slideshowEffectNames.map(name => `effect-${name}`),
-    "effect-slide-x-next", "effect-slide-x-previous", "effect-slide-y-next", "effect-slide-y-previous",
-    "effect-transition-setup");
+  slideshow.image.classList.remove(...slideshowEffectClasses);
   previousSlideshowEffect = null;
   slideshowItems = [];
   slideshowIndex = 0;
