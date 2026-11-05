@@ -41,6 +41,8 @@ Viewing existing photos only needs the Node.js server and local `data/manifest.j
 
 The <http://localhost:4173/?ctrl=1> view shows the local controls for date-range or direct-post fetches and photo feedback. If port 4173 is already in use, start with `PORT=4174 npm start` and open the corresponding URL.
 
+The manual Facebook photo control adds a parent-selected photo without recognition and follows `autoLike` in `config/job.json`. It reports saving and liking separately. If the photo is saved but liking fails, retry the same URL; the saved photo is not duplicated.
+
 ### Enable photo fetching and recognition
 
 Install Chromium inside WSL rather than reusing a macOS browser download. On Ubuntu, also install its system dependencies:

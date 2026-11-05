@@ -8,11 +8,18 @@ const PHOTO_ID = /^[0-9]+$/;
 const SECRET_QUERY = /^(?:access_token|appsecret_proof|oauth_token|token|authorization)$/i;
 const PHOTO_PATHS = new Set(['/photo', '/photo/', '/photo.php']);
 const ACTIONS = new Set(['added', 'promoted', 'already_selected', 'excluded']);
-const RUN_STATES = new Set(['complete', 'blocked', 'failed']);
+const RUN_STATES = new Set(['complete', 'partial', 'blocked', 'failed']);
+const REACTION_MESSAGES = {
+  liked: '已替這張照片按讚。',
+  already_liked: '這張照片已按讚。',
+  not_requested: '自動按讚目前關閉。',
+  failed: '照片已保存，但按讚未成功；請確認專用 Facebook 瀏覽器登入後，用同一個照片網址重試。',
+};
+const STORAGE_REACTION_MESSAGE = '照片已保存，但無法確認或記錄按讚狀態；請確認本機儲存空間與檔案權限後重試。';
 const MESSAGES = {
   idle: '尚未手動加入照片。',
-  running: '正在確認粉專來源並下載指定照片。',
-  added: '照片已手動加入原貼文相簿；未執行辨識或按讚。',
+  running: '正在確認粉專來源、加入指定照片並處理按讚。',
+  added: '照片已手動加入原貼文相簿。',
   promoted: '照片原已在相簿，已標記為手動加入。',
   already_selected: '照片已手動加入，沒有重複新增。',
   excluded: '照片目前標記為排除；沒有變更這項標記。',
@@ -63,8 +70,14 @@ export function photoIdFromUrl(value) {
 
 function safeResult(value) {
   if (!value || typeof value !== 'object' || !RUN_STATES.has(value.state)) throw new Error('Invalid photo import result');
-  if (value.state === 'complete' && ACTIONS.has(value.action)) {
-    return { state: 'complete', action: value.action, message: MESSAGES[value.action] };
+  if (['complete', 'partial'].includes(value.state) && ACTIONS.has(value.action)) {
+    const reaction = Object.hasOwn(REACTION_MESSAGES, value.reaction) ? value.reaction : null;
+    if (value.state === 'partial' && reaction !== 'failed') throw new Error('Invalid partial photo import result');
+    const reason = reaction === 'failed' ? (value.reason === 'local_storage' ? 'local_storage' : 'reaction_failure') : null;
+    const reactionMessage = reason === 'local_storage' ? STORAGE_REACTION_MESSAGE : REACTION_MESSAGES[reaction];
+    const message = MESSAGES[value.action] + (reaction && value.action !== 'excluded' ? ' ' + reactionMessage : '');
+    return { state: reaction === 'failed' ? 'partial' : 'complete', action: value.action,
+      ...(reaction ? { reaction } : {}), ...(reason ? { reason } : {}), message };
   }
   const reason = Object.hasOwn(MESSAGES, value.reason) ? value.reason : 'failed';
   return { state: value.state === 'blocked' ? 'blocked' : 'failed', message: MESSAGES[reason] };

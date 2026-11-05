@@ -848,6 +848,41 @@ def _gallery_cache_fingerprint(root, item):
         return False
 
 
+def _load_state(root):
+    state_path = safe_data_path(root, 'daily-state.json')
+    try:
+        state = _read_json(state_path) if state_path.exists() else {'version': 1, 'posts': {}}
+        if not isinstance(state, dict) or state.get('version') != 1 or not isinstance(state.get('posts'), dict):
+            raise ValueError()
+        state.setdefault('photoReactions', {})
+        if (not isinstance(state['photoReactions'], dict)
+                or any(not isinstance(photo_id, str) or not re.fullmatch(r'[0-9]+', photo_id)
+                       or not isinstance(entry, dict) or entry.get('reaction') not in {'liked', 'already_liked'}
+                       or not isinstance(entry.get('checkedAt'), str)
+                       for photo_id, entry in state['photoReactions'].items())):
+            raise ValueError()
+    except (OSError, ValueError, UnicodeError):
+        raise DailyError('local_storage') from None
+    return state
+
+
+def _react_photo_once(root, profile, photo_id, state, checked_at):
+    previous = state['photoReactions'].get(photo_id)
+    if previous is not None:
+        return 'already_liked'
+    result = _browser(root, 'react-photo', profile, photo_id)
+    if (result.get('state') != 'complete' or result.get('photoId') != photo_id
+            or result.get('reaction') not in {'liked', 'already_liked'}):
+        raise DailyError('reaction_failure')
+    reaction = result['reaction']
+    state['photoReactions'][photo_id] = {'reaction': reaction, 'checkedAt': checked_at}
+    try:
+        _atomic_json(root, 'daily-state.json', state)
+    except Exception:
+        raise DailyError('local_storage') from None
+    return reaction
+
+
 def _conditional_reaction(root, item, audit, profile, auto_like, simulate, report, state, feedback_snapshot=None):
     """Like individual candidate photos; local exclusions never undo remote likes."""
     _check_feedback_current(root, feedback_snapshot)
@@ -868,23 +903,14 @@ def _conditional_reaction(root, item, audit, profile, auto_like, simulate, repor
             reaction = 'suppressed_simulation' if simulate else 'not_requested'
         else:
             try:
-                result = _browser(root, 'react-photo', profile, photo_id)
-                if (result.get('state') != 'complete' or result.get('photoId') != photo_id
-                        or result.get('reaction') not in {'liked', 'already_liked'}):
-                    raise DailyError('reaction_failure')
-                reaction = result['reaction']
-            except Exception:
+                reaction = _react_photo_once(root, profile, photo_id, state, report['startedAt'])
+            except Exception as error:
+                if isinstance(error, DailyError) and error.reason == 'local_storage':
+                    raise
                 reaction = 'failed'
                 report['failures'].append({'sourceId': item['sourceId'], 'photoId': photo_id,
                                           'reason': 'reaction_failure', 'message': MESSAGES['reaction_failure']})
             else:
-                # Persist every verified photo before advancing. Rechecks and
-                # duplicate appearances in another post share this Photo ID.
-                state['photoReactions'][photo_id] = {'reaction': reaction, 'checkedAt': report['startedAt']}
-                try:
-                    _atomic_json(root, 'daily-state.json', state)
-                except Exception:
-                    raise DailyError('local_storage') from None
                 report['counts']['likedPhotos'] += reaction == 'liked'
         audit['photoReactions'].append({'photoId': photo_id, 'reaction': reaction})
     reactions = {entry['reaction'] for entry in audit['photoReactions']}
@@ -992,20 +1018,7 @@ def run_daily(root=ROOT, discovery_file=None, simulate=False, threshold=0.5, env
                                  totalPosts=len(observations), currentPost=0)
                 if discovery['state'] == 'blocked':
                     raise DailyError(discovery['reason'] or 'browser_unavailable')
-                state_path = safe_data_path(root, 'daily-state.json')
-                try:
-                    state = _read_json(state_path) if state_path.exists() else {'version': 1, 'posts': {}}
-                    if not isinstance(state, dict) or state.get('version') != 1 or not isinstance(state.get('posts'), dict):
-                        raise ValueError()
-                    state.setdefault('photoReactions', {})
-                    if (not isinstance(state['photoReactions'], dict)
-                            or any(not isinstance(photo_id, str) or not re.fullmatch(r'[0-9]+', photo_id)
-                                   or not isinstance(entry, dict) or entry.get('reaction') not in {'liked', 'already_liked'}
-                                   or not isinstance(entry.get('checkedAt'), str)
-                                   for photo_id, entry in state['photoReactions'].items())):
-                        raise ValueError()
-                except (OSError, ValueError, UnicodeError):
-                    raise DailyError('local_storage') from None
+                state = _load_state(root)
                 seen = set()
                 downloads = _private_directory(root, 'downloads')
                 completed_posts = 0

@@ -1036,7 +1036,7 @@ function setManualPhotoBusy(busy) {
 }
 
 function applyManualPhotoStatus(status) {
-  const labels = { idle: "", running: "正在手動加入照片", complete: "手動加入完成", blocked: "手動加入受阻", failed: "手動加入失敗" };
+  const labels = { idle: "", running: "正在手動加入照片", complete: "手動加入完成", partial: "照片已加入，按讚未完成", blocked: "手動加入受阻", failed: "手動加入失敗" };
   if (!status || !Object.hasOwn(labels, status.state)) throw new Error("Invalid manual photo status");
   const wasBusy = manualPhotoBusy;
   clearTimeout(manualPhotoPollTimer);
@@ -1053,8 +1053,8 @@ function applyManualPhotoStatus(status) {
   }
   if (status.state === "running") {
     manualPhotoPollTimer = setTimeout(reconcileManualPhotoStatus, 900);
-  } else if (wasBusy && status.state === "complete") {
-    ui.manualPhotoUrl.value = "";
+  } else if (wasBusy && ["complete", "partial"].includes(status.state)) {
+    if (status.state === "complete") ui.manualPhotoUrl.value = "";
     loadGallery();
   }
 }

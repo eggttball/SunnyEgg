@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import one parent-selected Facebook photo without recognition or reactions."""
+"""Import a parent-selected Facebook photo and apply the configured photo like."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -173,36 +173,53 @@ def _install_photo(root, photo_path, photo_id, item):
         raise
 
 
+def _finish_selection(root, profile, auto_like, photo_id, action):
+    result = {'state': 'complete', 'action': action, 'reaction': 'not_requested'}
+    if action == 'excluded' or not auto_like:
+        return result
+    try:
+        if _selection_action(root, photo_id) == 'excluded':
+            result['action'] = 'excluded'
+            return result
+        state = daily._load_state(root)
+        result['reaction'] = daily._react_photo_once(
+            root, profile, photo_id, state, datetime.now(timezone.utc).isoformat())
+    except Exception as error:
+        reason = 'local_storage' if isinstance(error, daily.DailyError) and error.reason == 'local_storage' else 'reaction_failure'
+        result.update(state='partial', reaction='failed', reason=reason)
+    return result
+
+
 def import_photo(root, env_file, photo_id):
     if not isinstance(photo_id, str) or PHOTO_ID.fullmatch(photo_id) is None:
         raise daily.DailyError('invalid_response')
     with daily._batch_lock(root):
         try:
-            token, version, page, _, _, _ = daily._configuration(root, env_file)
+            token, version, page, profile, auto_like, _ = daily._configuration(root, env_file)
         except facebook.FetchError:
             raise
         item = _parent_post(photo_id, token, version, page)
         action = _selection_action(root, photo_id)
-        if action is not None:
-            return action
-        source = daily._photo_source(photo_id, token, version)
-        downloads = safe_data_path(root, 'downloads')
-        downloads.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='.manual-photo-', dir=str(downloads)) as temporary:
-            downloaded = facebook.download_native(source, Path(temporary), 1, 'photos')
-            return _install_photo(root, downloaded, photo_id, item)
+        if action is None:
+            source = daily._photo_source(photo_id, token, version)
+            downloads = safe_data_path(root, 'downloads')
+            downloads.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix='.manual-photo-', dir=str(downloads)) as temporary:
+                downloaded = facebook.download_native(source, Path(temporary), 1, 'photos')
+                action = _install_photo(root, downloaded, photo_id, item)
+        return _finish_selection(root, profile, auto_like, photo_id, action)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Import one explicit Facebook photo without recognition or likes')
+    parser = argparse.ArgumentParser(description='Import one explicit Facebook photo and apply the configured like')
     parser.add_argument('--root', required=True)
     parser.add_argument('--env-file', required=True)
     parser.add_argument('--photo-id', required=True)
     args = parser.parse_args()
     try:
-        action = import_photo(Path(args.root).resolve(), Path(args.env_file), args.photo_id)
-        print(json.dumps({'state': 'complete', 'action': action}, ensure_ascii=False))
-        return 0
+        result = import_photo(Path(args.root).resolve(), Path(args.env_file), args.photo_id)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result['state'] == 'complete' else 2
     except daily.DailyError as error:
         print(json.dumps({'state': 'blocked', 'reason': error.reason}, ensure_ascii=False))
         return 2

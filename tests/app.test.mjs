@@ -162,6 +162,13 @@ async function runApp(posts, extra = {}, manual = {}) {
   return { document, filters, requests, requestDetails, content: document.querySelector('#gallery-content'),
     galleryPostIds: () => Array.from(vm.runInContext('gallery.posts.map(post => post.id)', context)),
     setManualStatus: value => { status = value; },
+    pollPhoto: async () => {
+      const entry = [...timers].find(([, timer]) => timer.delay === 900);
+      assert.ok(entry, 'a photo status reconciliation is scheduled');
+      timers.delete(entry[0]);
+      entry[1].callback();
+      await tick();
+    },
     poll: async () => {
       const entry = [...timers].find(([, timer]) => timer.delay === 2000);
       assert.ok(entry, 'a status reconciliation is scheduled');
@@ -171,6 +178,29 @@ async function runApp(posts, extra = {}, manual = {}) {
     },
     failNextFetch: () => { nextResponse = { ok: false, status: 500, json: async () => ({ error: '相簿資料讀取失敗' }) }; } };
 }
+
+test('a failed manual photo like refreshes the saved gallery and retains the URL for retry', async () => {
+  let photoStatus = { state: 'idle' };
+  const app = await runApp([], {}, { search: '?ctrl=1', handle: async (url, init) => {
+    if (url === '/api/manual-photo/status?ctrl=1') return { ok: true, json: async () => photoStatus };
+    if (url === '/api/manual-photo?ctrl=1' && init.method === 'POST') {
+      photoStatus = { state: 'running' };
+      return { ok: true, status: 202, json: async () => photoStatus };
+    }
+  } });
+  const url = 'https://www.facebook.com/photo/?fbid=100';
+  const input = app.document.querySelector('#manual-photo-url');
+  input.value = url;
+  const before = app.requests.filter(value => value === '/api/gallery').length;
+  app.document.querySelector('#manual-photo-form').dispatch('submit');
+  await tick();
+  photoStatus = { state: 'partial', action: 'added', reaction: 'failed', message: '照片已保存；按讚未成功，請重試。' };
+  await app.pollPhoto();
+  assert.equal(input.value, url);
+  assert.equal(app.requests.filter(value => value === '/api/gallery').length, before + 1);
+  assert.equal(app.document.querySelector('#manual-photo-submit').disabled, false);
+  assert.match(app.document.querySelector('#manual-photo-status').textContent, /按讚未成功/);
+});
 
 test('default gallery displays only per-photo candidate results from mixed states', async () => {
   const { content, document, filters } = await runApp([photoPost(['candidate', 'no_match', 'no_face', null])]);
