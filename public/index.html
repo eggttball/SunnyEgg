@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#faf7ee">
     <title>荷包蛋｜孩子的日常小集</title>
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/admin-auth.css">
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -19,13 +20,17 @@
       </aside>
       <main>
         <header class="topbar"><div><span class="small-sun" aria-hidden="true">☀</span> 每一個小日子，都值得記得</div><a id="source-page" class="source-link" href="https://www.facebook.com/profile.php?id=100063963161862" target="_blank" rel="noopener noreferrer">小鹿托嬰中心 <span aria-hidden="true">↗</span></a></header>
+        <section id="admin-auth" class="admin-auth" aria-labelledby="admin-auth-title" hidden>
+          <div><h2 id="admin-auth-title">相簿管理</h2><p id="admin-auth-message" role="status" aria-live="polite">請使用管理員 Google 帳號登入。</p></div>
+          <div class="admin-auth-actions"><button id="admin-sign-in" class="button" type="button">Google 登入</button><button id="admin-sign-out" class="button subtle" type="button" hidden>登出</button></div>
+        </section>
         <section class="intro" aria-labelledby="page-title">
           <div class="eyebrow">LITTLE MOMENTS, BIG MEMORIES</div>
           <h1 id="page-title">孩子的日常小集<span aria-hidden="true">.</span></h1>
           <div class="intro-bottom"><button id="refresh" class="button subtle" type="button" data-control-only="" hidden><span aria-hidden="true">↻</span> 重新讀取本機資料</button></div>
         </section>
         <section class="daily-card" aria-labelledby="daily-title" data-control-only="" hidden>
-          <div><h2 id="daily-title">每日照片流程</h2><p id="schedule-summary">每天 20:00（台灣時間）</p><p class="schedule-note">本機排程啟動後，會每日檢查照片。</p></div>
+          <div><h2 id="daily-title">每日照片流程</h2><p id="schedule-summary">每天 20:00（台灣時間）</p><p class="schedule-note">每日 20:00 建立待同意工作；登入管理員並同意後才抓取照片。</p></div>
           <div id="job-status" class="status-banner" role="status" aria-live="polite" hidden></div>
           <form id="manual-fetch-form" class="manual-fetch" aria-labelledby="manual-fetch-title" aria-busy="true" data-control-only="" hidden>
             <h3 id="manual-fetch-title">隨時抓取貼文</h3>

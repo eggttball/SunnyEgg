@@ -23,6 +23,14 @@ except ModuleNotFoundError:
 
 NOW = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
 ENV = {"FB_ACCESS_TOKEN": "test-secret-token", "FB_GRAPH_VERSION": "v99.0"}
+
+class FirebaseEnvironmentTests(unittest.TestCase):
+    def test_firebase_credential_path_can_coexist_with_fb_settings_without_reading_private_key(self):
+        content = b'FB_ACCESS_TOKEN=test-secret-token\nFB_GRAPH_VERSION=v99.0\nGOOGLE_APPLICATION_CREDENTIALS=/outside/repo/not-read.json\n'
+        values = facebook.parse_environment_content(content)
+        self.assertEqual(facebook.configured(values, 3, 4)[:2], ('test-secret-token', 'v99.0'))
+        self.assertEqual(values['GOOGLE_APPLICATION_CREDENTIALS'], '/outside/repo/not-read.json')
+
 JPEG = b"\xff\xd8\xff\xe0" + b"test fixture, not downloaded Facebook media"
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"test fixture only"
 

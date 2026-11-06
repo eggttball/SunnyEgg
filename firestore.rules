@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function admin() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && request.auth.token.email == 'eggttball@gmail.com'
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function control() { return /databases/$(database)/documents/runtime/control; }
+    function job(id) { return /databases/$(database)/documents/jobs/$(id); }
+    function freeToQueue() {
+      return !exists(control()) || !('activeJobId' in get(control()).data)
+        || get(control()).data.activeJobId == null
+        || !exists(job(get(control()).data.activeJobId))
+        || !(get(job(get(control()).data.activeJobId)).data.state in ['queued', 'running']);
+    }
+    function queuedAfter(id) {
+      return id is string && existsAfter(job(id)) && getAfter(job(id)).data.state == 'queued';
+    }
+    function validInput(data) {
+      return (data.kind == 'fetch' && data.input.keys().hasOnly(['startDate', 'endDate', 'timeZone'])
+        && data.input.startDate is string && data.input.endDate is string && data.input.timeZone == 'Asia/Taipei')
+        || (data.kind == 'post' && data.input.keys().hasOnly(['postUrl']) && data.input.postUrl is string && data.input.postUrl.size() <= 4096)
+        || (data.kind == 'photo' && data.input.keys().hasOnly(['photoId']) && data.input.photoId.matches('^[0-9]{1,50}$'));
+    }
+    match /photos/{key} {
+      allow read: if admin() || (resource.data.status == 'published' && resource.data.userExcluded == false);
+      // Clients may only change the exclusion flag and its guarded bookkeeping.
+      // Paths, identities, recognition and publication metadata belong to the worker.
+      allow update: if admin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'userExcluded', 'revision', 'status', 'objectsToDelete', 'objectPath', 'pendingObjectPath', 'publicationToken', 'updatedAt'
+        ])
+        && request.resource.data.userExcluded is bool
+        && request.resource.data.userExcluded != resource.data.userExcluded
+        && request.resource.data.revision == resource.data.revision + 1
+        && request.resource.data.objectPath == null && request.resource.data.pendingObjectPath == null
+        && request.resource.data.publicationToken == null
+        && ((request.resource.data.userExcluded == true && request.resource.data.status == 'excluded'
+          && request.resource.data.objectsToDelete.toSet() == resource.data.objectsToDelete.concat([resource.data.get('objectPath', null), resource.data.get('pendingObjectPath', null)]).removeAll([null]).toSet())
+          || (request.resource.data.userExcluded == false && request.resource.data.status == 'pending'
+            && request.resource.data.objectsToDelete == resource.data.objectsToDelete))
+        && ((!exists(/databases/$(database)/documents/runtime/feedback)
+            && getAfter(/databases/$(database)/documents/runtime/feedback).data.revision == 1)
+          || (exists(/databases/$(database)/documents/runtime/feedback)
+            && getAfter(/databases/$(database)/documents/runtime/feedback).data.revision
+              == get(/databases/$(database)/documents/runtime/feedback).data.revision + 1));
+      allow create, delete: if false;
+    }
+    match /jobs/{id} {
+      allow read: if admin();
+      allow create: if admin() && freeToQueue()
+        && request.resource.data.keys().hasOnly(['id', 'kind', 'input', 'state', 'createdAt', 'message', 'progress'])
+        && request.resource.data.id == id && id.matches('^[A-Za-z0-9_-]{1,200}$')
+        && request.resource.data.state == 'queued' && validInput(request.resource.data)
+        && request.resource.data.createdAt is number && request.resource.data.message is string
+        && request.resource.data.progress == {'phase': 'preparing'}
+        && getAfter(control()).data.activeJobId == id;
+      allow update: if admin() && freeToQueue() && resource.data.state == 'awaiting_approval'
+        && get(control()).data.pendingApprovalId == id
+        && request.resource.data.state == 'queued'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['state', 'approvedAt', 'message'])
+        && request.resource.data.approvedAt is number && request.resource.data.message is string
+        && getAfter(control()).data.activeJobId == id && getAfter(control()).data.pendingApprovalId == null;
+      allow delete: if false;
+    }
+    match /runtime/control {
+      allow read: if admin();
+      allow create: if admin() && request.resource.data.keys().hasOnly(['activeJobId', 'latestFetch', 'latestPhoto'])
+        && queuedAfter(request.resource.data.activeJobId);
+      allow update: if admin() && freeToQueue()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activeJobId', 'latestFetch', 'latestPhoto', 'pendingApprovalId'])
+        && queuedAfter(request.resource.data.activeJobId)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['pendingApprovalId'])
+          || (request.resource.data.pendingApprovalId == null
+            && resource.data.pendingApprovalId == request.resource.data.activeJobId
+            && get(job(resource.data.pendingApprovalId)).data.state == 'awaiting_approval'));
+    }
+    match /runtime/feedback {
+      allow read: if admin();
+      allow create: if admin() && request.resource.data.keys().hasOnly(['revision']) && request.resource.data.revision == 1;
+      allow update: if admin() && request.resource.data.keys().hasOnly(['revision']) && request.resource.data.revision == resource.data.revision + 1;
+    }
+    match /runtime/worker { allow read: if admin(); allow write: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

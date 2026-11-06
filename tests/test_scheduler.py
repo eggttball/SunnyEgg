@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from scheduler import next_trigger, load_schedule, trigger_once
+from scheduler import next_trigger, load_schedule, trigger_once, main
 
 class SchedulerTests(unittest.TestCase):
     def test_taipei_twenty_before_at_after_and_utc_input(self):
@@ -27,6 +27,11 @@ class SchedulerTests(unittest.TestCase):
         config = load_schedule(root)
         self.assertEqual(config['schedule'], {'cron':'0 20 * * *', 'timeZone':'Asia/Taipei'})
         self.assertEqual(config['media'], 'photos')
+
+    def test_legacy_continuous_scheduler_does_not_run_without_consent(self):
+        with patch('scheduler.load_schedule', return_value={}), patch('scheduler.run_daily') as batch, patch('sys.stderr'):
+            self.assertEqual(main([]), 2)
+            batch.assert_not_called()
 
     def test_once_invokes_batch_with_explicit_replay_mode(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1,4 +1,5 @@
 # Local secrets and runtime environments
+**/*firebase-adminsdk*.json
 .env
 .env.*
 !.env.example
@@ -25,3 +26,12 @@ __pycache__/
 
 # Local investigation notes can contain private post identifiers and face scores
 /docs/*
+!/docs/firebase.md
+
+# Firebase build, emulator and deployment artifacts
+dist/
+.firebase/
+firebase-debug*.log
+firestore-debug.log
+ui-debug.log
+.media-checkout/

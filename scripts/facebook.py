@@ -24,6 +24,7 @@ ATTACHMENT_LIMIT = 100
 ATTACHMENT_RESOLVER_VERSION = 2
 FIELDS = "id,message,created_time,permalink_url,attachments.limit(100){type,url,target,media,subattachments.limit(100){type,url,target,media}}"
 ENV_KEYS = {"FB_ACCESS_TOKEN", "FB_GRAPH_VERSION", "FB_PAGE_ID", "FB_APP_ID", "FB_APP_SECRET"}
+ENV_FILE_KEYS = ENV_KEYS | {"GOOGLE_APPLICATION_CREDENTIALS", "SUNNYEGG_MEDIA_DIR"}
 
 
 class FetchError(MediaError):
@@ -339,7 +340,7 @@ def parse_environment_content(content):
                 raise ValueError()
             key, value = line.split("=", 1)
             key, value = key.strip(), value.strip()
-            if key not in ENV_KEYS or key in result:
+            if key not in ENV_FILE_KEYS or key in result:
                 raise ValueError()
             if value[:1] in {"'", '"'}:
                 quote = value[0]

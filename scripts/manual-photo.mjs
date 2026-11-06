@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { attachAbort } from './process-abort.mjs';
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -68,7 +69,7 @@ export function photoIdFromUrl(value) {
   return identifiers[0];
 }
 
-function safeResult(value) {
+export function safeResult(value) {
   if (!value || typeof value !== 'object' || !RUN_STATES.has(value.state)) throw new Error('Invalid photo import result');
   if (['complete', 'partial'].includes(value.state) && ACTIONS.has(value.action)) {
     const reaction = Object.hasOwn(REACTION_MESSAGES, value.reaction) ? value.reaction : null;
@@ -109,8 +110,9 @@ export function createManualPhotoController({ root, runner = createManualPhotoRu
 
 export function createManualPhotoRunner({ root }) {
   const projectRoot = resolve(root);
-  return async ({ photoId }) => {
+  return async ({ photoId, signal }) => {
     if (typeof photoId !== 'string' || !PHOTO_ID.test(photoId)) throw new Error('Invalid photo ID');
+    signal?.throwIfAborted();
     const venvPython = resolve(projectRoot, '.venv/bin/python');
     const executable = await access(venvPython, constants.X_OK).then(() => venvPython, () => 'python3');
     const args = [
@@ -118,7 +120,8 @@ export function createManualPhotoRunner({ root }) {
       '--env-file', resolve(projectRoot, '.env'), '--photo-id', photoId,
     ];
     return new Promise((resolveResult, reject) => {
-      const child = spawn(executable, args, { cwd: projectRoot, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(executable, args, { cwd: projectRoot, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+      const detachAbort = attachAbort(child, signal);
       const chunks = [];
       let bytes = 0;
       let overflow = false;
@@ -130,8 +133,9 @@ export function createManualPhotoRunner({ root }) {
         } else chunks.push(chunk);
       });
       child.stderr.on('data', () => {});
-      child.on('error', () => reject(new Error('Manual photo job could not start')));
+      child.on('error', () => { detachAbort(); reject(new Error('Manual photo job could not start')); });
       child.on('close', (code, signal) => {
+        detachAbort();
         try {
           if (overflow || signal) throw new Error();
           const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));

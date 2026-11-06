@@ -182,7 +182,7 @@ export function createGalleryHandler({ root = PROJECT_ROOT, manualFetchRunner, p
         return json(res, 200, data);
       }
       let base, requested;
-      const frontend = { '/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css', '/app.js': 'app.js' };
+      const frontend = { '/': 'index.html', '/index.html': 'index.html', '/styles.css': 'styles.css', '/admin-auth.css': 'admin-auth.css', '/app.js': 'app.js' };
       if (Object.hasOwn(frontend, pathname)) {
         base = resolve(canonicalRoot, 'public'); requested = frontend[pathname];
       } else if (pathname.startsWith('/media/')) {

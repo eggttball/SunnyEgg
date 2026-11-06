@@ -719,7 +719,7 @@ export async function main(args=process.argv.slice(2), {loadPlaywright=()=>impor
   while(args.length) {const key=args.shift();if(!['--profile','--max-scrolls','--url','--photo-id','--progress-id'].includes(key) || !args.length || Object.hasOwn(options,key)) throw new CollectorError('invalid_arguments');options[key]=args.shift();}
   if(!['login','discover','inspect-post','collect-post-photos','react','react-photo'].includes(command) || !options['--profile'] ||
       (command!=='react-photo' && Object.hasOwn(options,'--photo-id')) ||
-      (!['discover','inspect-post','collect-post-photos'].includes(command) && Object.hasOwn(options,'--url')) ||
+      (!['discover','inspect-post','collect-post-photos','react'].includes(command) && Object.hasOwn(options,'--url')) ||
       (!['discover','collect-post-photos'].includes(command) && Object.hasOwn(options,'--progress-id')) ||
       (Object.hasOwn(options,'--progress-id') && !PROGRESS_ID.test(options['--progress-id']))) throw new CollectorError('invalid_arguments');
   if(command==='react-photo') {

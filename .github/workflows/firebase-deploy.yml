@@ -1,0 +1,86 @@
+name: Deploy SunnyEgg to Firebase
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # UTC 12:00 = Asia/Taipei 20:00. GitHub schedules may be delayed.
+    - cron: '0 12 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'schedule' && 'firebase-daily-consent' || 'firebase-production' }}
+  cancel-in-progress: false
+jobs:
+  daily-consent:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Configure Firebase credentials
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SUNNYEGG }}
+        run: node scripts/firebase-ci-credentials.mjs
+      - run: npm run firebase:schedule
+  verify:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: python -m pip install -r requirements-optional.txt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm test
+      - run: npm run firebase:test-rules
+  deploy:
+    needs: verify
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm media repository is private
+        env:
+          GH_TOKEN: ${{ secrets.SUNNYEGG_REPO_TOKEN }}
+        run: test "$(gh api repos/eggttball/SunnyEggMedia --jq '.private')" = true
+      - name: Checkout private selected media
+        uses: actions/checkout@v4
+        with:
+          repository: eggttball/SunnyEggMedia
+          token: ${{ secrets.SUNNYEGG_REPO_TOKEN }}
+          path: .media-checkout
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Configure Firebase deployment credentials
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SUNNYEGG }}
+        run: node scripts/firebase-ci-credentials.mjs
+      - name: Prepare eligible media, deploy and publish metadata
+        env:
+          SUNNYEGG_MEDIA_DIR: ${{ github.workspace }}/.media-checkout
+        run: |
+          npm run firebase:prepare
+          npm run firebase:deploy
+          npm run firebase:finalize

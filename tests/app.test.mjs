@@ -134,8 +134,11 @@ async function runApp(posts, extra = {}, manual = {}) {
     version: 1, posts, sourcePage: 'https://www.facebook.com/profile.php?id=100063963161862',
     reference: { count: 7, directory: 'data/reference-child', supportedExtensions: ['.jpg'] }, ...extra,
   }) };
+  let authListener = null;
+  const cloud = manual.cloud ? { onGalleryChange: () => {}, subscribe: listener => { authListener = listener; listener(false); },
+    request: (url, init) => context.fetch(url, init) } : undefined;
   const context = vm.createContext({
-    document, URL, URLSearchParams, Intl, AbortController, window: { location: { search: manual.search || '' } },
+    document, URL, URLSearchParams, Intl, AbortController, window: { addEventListener: () => {}, location: { search: manual.search || '' }, ...(cloud ? { SunnyEggCloud: cloud } : {}) },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout: id => timers.delete(id),
     Option: function(text, value) { const node = new Node('option'); node.textContent = text; node.value = value; return node; },
@@ -146,7 +149,7 @@ async function runApp(posts, extra = {}, manual = {}) {
         const response = await manual.handle(url, init);
         if (response) return response;
       }
-      if (url === '/api/gallery') return nextResponse;
+      if (url === '/api/gallery' || url === '/api/gallery?ctrl=1') return nextResponse;
       if (url === '/api/manual-fetch/options') return { ok: true, json: async () => fetchOptions };
       if (url === '/api/manual-fetch/status') return { ok: true, json: async () => status };
       if (url === '/api/manual-fetch') {
@@ -160,6 +163,7 @@ async function runApp(posts, extra = {}, manual = {}) {
   await tick();
   assert.equal(document.querySelector('#api-error').hidden, true, 'app initialized successfully');
   return { document, filters, requests, requestDetails, content: document.querySelector('#gallery-content'),
+    authorize: async allowed => { authListener(allowed); await tick(); },
     galleryPostIds: () => Array.from(vm.runInContext('gallery.posts.map(post => post.id)', context)),
     setManualStatus: value => { status = value; },
     pollPhoto: async () => {
@@ -178,6 +182,19 @@ async function runApp(posts, extra = {}, manual = {}) {
     },
     failNextFetch: () => { nextResponse = { ok: false, status: 500, json: async () => ({ error: '相簿資料讀取失敗' }) }; } };
 }
+
+test('hosted ctrl=1 keeps controls hidden and never initializes control APIs before administrator sign-in', async () => {
+  const app = await runApp([photoPost(['candidate'])], {}, { search: '?ctrl=1', cloud: true });
+  assert.equal(app.document.querySelector('#manual-fetch-form').hidden, true);
+  assert.equal(app.content.querySelectorAll('.photo-feedback-button').length, 0);
+  assert.equal(app.requests.some(url => url.startsWith('/api/manual-')), false);
+  await app.authorize(true);
+  assert.equal(app.document.querySelector('#manual-fetch-form').hidden, false);
+  assert.equal(app.content.querySelectorAll('.photo-feedback-button').length, 1);
+  await app.authorize(false);
+  assert.equal(app.document.querySelector('#manual-fetch-form').hidden, true);
+  assert.equal(app.content.querySelectorAll('.photo-feedback-button').length, 0);
+});
 
 test('a failed manual photo like refreshes the saved gallery and retains the URL for retry', async () => {
   let photoStatus = { state: 'idle' };
@@ -300,7 +317,7 @@ test('marking a wrong photo submits its identity then refreshes without losing t
       return { ok: true, json: async () => ({ ...body }) };
     },
   });
-  document.querySelector('#date-filter').value = '2026-11-01';
+  document.querySelector('#date-filter').value = '1';
   filters.find(button => button.dataset.filter === 'all').click();
   content.querySelectorAll('.photo-feedback-button')[0].click();
   await tick();
@@ -309,7 +326,7 @@ test('marking a wrong photo submits its identity then refreshes without losing t
   assert.equal(request.headers['Content-Type'], 'application/json');
   assert.equal(request.credentials, 'same-origin');
   assert.deepEqual(JSON.parse(request.body), { postId: 'photos', assetId: 'photo-0', excluded: true });
-  assert.equal(document.querySelector('#date-filter').value, '2026-11-01');
+  assert.equal(document.querySelector('#date-filter').value, '1');
   assert.equal(filters.find(button => button.dataset.filter === 'all').attributes['aria-pressed'], 'true');
   assert.match(content.textContent, /已排除.*恢復照片/);
   assert.equal(document.querySelector('#count-candidate').textContent, '0');
@@ -417,7 +434,7 @@ test('broken and cyclic duplicate references do not make retained photos disappe
   assert.equal(content.querySelectorAll('img').length, 3);
 });
 
-test('gallery deduplicates the same Facebook photo across posts and computes logical date and total counts', async () => {
+test('gallery deduplicates the same Facebook photo across posts and month filtering preserves the canonical owner', async () => {
   const first = photoPost(['candidate'], { id: 'first', publishedAt: '2026-10-29T10:00:00Z' });
   const later = photoPost(['candidate', 'candidate'], { id: 'later', publishedAt: '2026-10-27T10:00:00Z' });
   first.assets[0].sourcePhotoId = '100';
@@ -433,10 +450,10 @@ test('gallery deduplicates the same Facebook photo across posts and computes log
     const { content, document } = await runApp([first, later], {}, { search });
     assert.deepEqual(content.querySelectorAll('img').map(image => image.src), ['/media/photos/0.jpg', '/media/later/1.jpg']);
     assert.equal(document.querySelector('#count-candidate').textContent, '2');
-    document.querySelector('#date-filter').value = '2026-10-27';
+    document.querySelector('#date-filter').value = '1';
     document.querySelector('#date-filter').dispatch('change');
-    assert.deepEqual(content.querySelectorAll('img').map(image => image.src), ['/media/later/1.jpg']);
-    assert.equal(document.querySelector('#count-all').textContent, '1');
+    assert.deepEqual(content.querySelectorAll('img').map(image => image.src), ['/media/photos/0.jpg', '/media/later/1.jpg']);
+    assert.equal(document.querySelector('#count-all').textContent, '2');
   }
 });
 
@@ -774,7 +791,7 @@ test('gallery and audit display copies sort by full publish time with Taipei dat
   }
 });
 
-test('newest-first display keeps the original duplicate owner and its date-filtered exclusion undo target', async () => {
+test('newest-first display keeps the original duplicate owner and its exclusion undo target across month filtering', async () => {
   const old = photoPost(['candidate'], { id: 'old', title: 'old', publishedAt: '2026-10-29T10:00:00Z' });
   old.assets[0] = { ...old.assets[0], id: 'old-photo', sourcePhotoId: '100', userExcluded: true, path: 'media/old/original.jpg' };
   old.recognition.results[0].assetId = 'old-photo';
@@ -799,17 +816,17 @@ test('newest-first display keeps the original duplicate owner and its date-filte
   assert.equal(ctrl.document.querySelector('#count-candidate').textContent, '2');
   assert.equal(ctrl.content.querySelectorAll('.photo-excluded-label').length, 1);
   const date = ctrl.document.querySelector('#date-filter');
-  date.value = '2026-10-29';
+  date.value = '2';
   date.dispatch('change');
-  assert.deepEqual(ctrl.content.querySelectorAll('img').map(image => image.src), ['/media/old/original.jpg']);
-  ctrl.content.querySelectorAll('.photo-feedback-button')[0].click();
+  assert.deepEqual(ctrl.content.querySelectorAll('img').map(image => image.src), ['/media/latest/new.jpg', '/media/middle/photo.jpg', '/media/old/original.jpg']);
+  ctrl.content.querySelectorAll('.photo-feedback-button')[2].click();
   await tick();
   assert.deepEqual(JSON.parse(ctrl.requestDetails.find(request => request.url === '/api/photo-feedback').body), {
     postId: 'old', assetId: 'old-photo', excluded: false,
   });
-  assert.equal(date.value, '2026-10-29');
-  assert.equal(ctrl.document.querySelector('#count-all').textContent, '1');
-  assert.equal(ctrl.document.querySelector('#count-candidate').textContent, '1');
+  assert.equal(date.value, '2');
+  assert.equal(ctrl.document.querySelector('#count-all').textContent, '3');
+  assert.equal(ctrl.document.querySelector('#count-candidate').textContent, '3');
   date.value = 'all';
   date.dispatch('change');
   assert.deepEqual(ctrl.content.querySelectorAll('img').map(image => image.src), [
@@ -818,17 +835,21 @@ test('newest-first display keeps the original duplicate owner and its date-filte
   assert.deepEqual(ctrl.galleryPostIds(), ['old', 'middle', 'latest']);
 });
 
-test('date filtering uses Taipei dates and changes only the visible photo set', async () => {
+test('month filtering uses Taipei dates and updates both visible photos and navigation', async () => {
   const prior = photoPost(['candidate'], { id: 'prior', publishedAt: '2026-10-31T15:30:00Z' });
   const today = photoPost(['candidate', 'no_face'], { id: 'today', publishedAt: '2026-10-31T16:30:00Z' });
   const { content, document } = await runApp([prior, today]);
   const date = document.querySelector('#date-filter');
-  assert.deepEqual(date.children.map(option => option.value), ['all', '2026-11-01', '2026-10-31']);
-  date.value = '2026-11-01';
+  date.value = '1';
   date.dispatch('change');
   assert.equal(content.querySelectorAll('img').length, 1);
   assert.equal(document.querySelector('#count-all').textContent, '2');
   assert.equal(document.querySelector('#count-candidate').textContent, '1');
+  assert.deepEqual(document.querySelector('#month-nav').children.map(link => link.textContent), ['最新貼文', '2026 年 11 月']);
+  date.value = '2';
+  date.dispatch('change');
+  assert.equal(content.querySelectorAll('img').length, 2);
+  assert.deepEqual(document.querySelector('#month-nav').children.map(link => link.textContent), ['最新貼文', '2026 年 11 月', '2026 年 10 月']);
 });
 
 test('unprocessed photos stay out of candidates but remain available for inspection', async () => {
@@ -1201,3 +1222,11 @@ test('an older failed gallery request cannot replace a newer successful gallery 
   assert.equal(document.querySelector('#api-error').hidden, true);
   assert.deepEqual(content.querySelectorAll('img').map(image => image.src), ['/media/new/0.jpg']);
 });
+
+ test('a cloud exclusion with no served path still offers the administrator a restore control', async () => {
+  const post = photoPost(['candidate']); post.assets[0].userExcluded = true; post.assets[0].path = null;
+  const app = await runApp([post], {}, { search: '?ctrl=1', cloud: true });
+  await app.authorize(true);
+  assert.equal(app.content.querySelectorAll('img').length, 0);
+  assert.equal(app.content.querySelectorAll('.photo-feedback-button')[0]?.textContent, '恢復照片');
+ });

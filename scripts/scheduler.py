@@ -54,14 +54,8 @@ def main(argv=None):
             result=trigger_once(args.root,args.discovery_file,args.simulate,args.env_file)
             print(json.dumps(result,ensure_ascii=False))
             return 0 if result.get('state')=='complete' else 2
-        while True:
-            scheduled=next_trigger()
-            print('下次照片觸發：'+scheduled.isoformat(),flush=True)
-            while (scheduled-datetime.now(TAIPEI)).total_seconds()>0:
-                time.sleep(min(30,(scheduled-datetime.now(TAIPEI)).total_seconds()))
-            result=trigger_once(args.root,env_file=args.env_file)
-            print(json.dumps(result,ensure_ascii=False),flush=True)
-            time.sleep(1)
+        print('每日排程已改為先等待管理員同意。請執行 npm run firebase:worker，並到網站 ?ctrl=1 登入後同意執行。',file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         return 0
     except Exception as error:

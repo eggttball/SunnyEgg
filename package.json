@@ -4,13 +4,33 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_*.py' -v"
+    "test": "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "build": "node scripts/build.mjs",
+    "firebase:worker": "node scripts/firebase-worker.mjs",
+    "firebase:sync": "node scripts/firebase-worker.mjs --sync",
+    "firebase:deploy": "node scripts/firebase-deploy.mjs",
+    "firebase:prepare": "node scripts/firebase-deploy.mjs --prepare",
+    "firebase:finalize": "node scripts/firebase-deploy.mjs --finalize",
+    "firebase:schedule": "node scripts/firebase-worker.mjs --schedule-only",
+    "firebase:media-init": "node scripts/firebase-media-init.mjs",
+    "firebase:test-rules": "firebase emulators:exec --project demo-sunnyegg --only firestore \"node --test tests/firebase-rules.test.mjs\""
   },
   "dependencies": {
+    "firebase": "12.14.0",
+    "firebase-admin": "14.5.0",
     "playwright": "1.64.1"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.0",
+    "esbuild": "0.28.2",
+    "firebase-tools": "15.35.0"
+  },
+  "overrides": {
+    "@firebase/app": "0.14.13",
+    "@firebase/app-compat": "0.5.13"
   }
 }

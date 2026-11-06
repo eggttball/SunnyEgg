@@ -48,7 +48,9 @@ let manualRun = null;
 let manualPollTimer = null;
 let manualPhotoBusy = false;
 let manualPhotoPollTimer = null;
-const controlMode = new URLSearchParams(window.location.search).get("ctrl") === "1";
+const cloud = window.SunnyEggCloud;
+const controlRequested = new URLSearchParams(window.location.search).get("ctrl") === "1";
+let controlMode = controlRequested && !cloud;
 document.querySelectorAll("[data-control-only]").forEach(node => { node.hidden = !controlMode; });
 const feedbackBusy = new Set();
 const feedbackErrors = new Map();
@@ -267,7 +269,7 @@ function newestFirst(posts) {
 
 function sourcePhotoId(post, asset) {
   const current = asset?.sourcePhotoId;
-  if (typeof current === "string" && /^\d+$/.test(current)) return current;
+  if (current != null) return typeof current === "string" && /^\d+$/.test(current) ? current : null;
   const assets = Array.isArray(post?.assets) ? post.assets : [];
   const index = assets.findIndex(entry => entry?.id === asset?.id);
   const legacy = index >= 0 && Array.isArray(post?.dailyPhotoIds) && post.dailyPhotoIds.length === assets.length
@@ -399,6 +401,17 @@ async function submitPhotoFeedback(postId, asset, button) {
 function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowItems=[], slideshowIndex=0) {
   const card = element("figure", "media-card");
   if (asset.userExcluded === true) card.classList.toggle("user-excluded", true);
+  if (cloud && asset.userExcluded === true) {
+    const caption = element("figcaption", "media-caption");
+    caption.append(element("span", "photo-excluded-label", "已排除 · 等待照片更新部署"));
+    const button = element("button", "photo-feedback-button", "恢復照片");
+    button.type = "button";
+    button.disabled = feedbackBusy.has(feedbackKey(postId, asset.id));
+    button.addEventListener("click", () => submitPhotoFeedback(postId, asset, button));
+    caption.append(button);
+    card.append(element("div", "excluded-photo-placeholder", "照片已排除"), caption);
+    return card;
+  }
   const url = mediaUrl(asset.path);
   if (!url) {
     card.append(element("p", "media-error", "無法顯示這張照片：本機照片路徑不符合格式。"));
@@ -739,11 +752,12 @@ async function loadGallery() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch("/api/gallery", { cache: "no-store", signal: controller.signal });
+    const galleryUrl = cloud && controlMode ? "/api/gallery?ctrl=1" : "/api/gallery";
+    const response = await (cloud ? cloud.request(galleryUrl, { cache: "no-store", signal: controller.signal }) : fetch(galleryUrl, { cache: "no-store", signal: controller.signal }));
     if (requestId !== galleryRequestId) return;
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      throw new Error(`本機服務回應 HTTP ${response.status}${typeof detail.error === "string" ? `：${detail.error}` : ""}`);
+      throw new Error(`相簿服務回應 HTTP ${response.status}${typeof detail.error === "string" ? `：${detail.error}` : ""}`);
     }
     const data = await response.json();
     if (requestId !== galleryRequestId) return;
@@ -755,7 +769,7 @@ async function loadGallery() {
   } catch (error) {
     if (requestId !== galleryRequestId) return;
     const detail = error.name === "AbortError" ? "讀取超過 15 秒" : error.message;
-    ui.error.textContent = `無法讀取本機相簿：${detail}。請確認本機服務已啟動，再按「重新讀取本機資料」。${gallery ? "下方保留上次成功讀取的內容，可能不是最新狀態。" : ""}`;
+    ui.error.textContent = cloud ? `無法讀取相簿：${detail}。請稍後重新整理頁面。` : `無法讀取本機相簿：${detail}。請確認本機服務已啟動，再按「重新讀取本機資料」。${gallery ? "下方保留上次成功讀取的內容，可能不是最新狀態。" : ""}`;
     ui.error.hidden = false;
     if (!gallery) {
       ui.content.replaceChildren(element("div", "loading-state", "本機服務連線成功後，這裡會顯示候選照片與已保留的照片。"));
@@ -805,7 +819,8 @@ async function manualRequest(url, init = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(url, { cache: "no-store", ...init, signal: controller.signal });
+    if (cloud && !controlMode) throw new Error("請先登入管理員帳號。");
+    const response = await (cloud ? cloud.request(url, { cache: "no-store", ...init, signal: controller.signal }) : fetch(url, { cache: "no-store", ...init, signal: controller.signal }));
     const data = await response.json();
     return { response, data };
   } finally { clearTimeout(timeout); }
@@ -813,6 +828,7 @@ async function manualRequest(url, init = {}) {
 
 function scheduleManualPoll() {
   clearTimeout(manualPollTimer);
+  if (cloud && !controlMode) return;
   manualPollTimer = setTimeout(() => { manualPollTimer = null; reconcileManualStatus(); }, 2000);
 }
 
@@ -942,6 +958,7 @@ async function refreshManualOptions(useDefault = false) {
 }
 
 async function initializeManualFetch() {
+  if (cloud && !controlMode) return;
   setManualBusy(true);
   await Promise.all([
     (async () => {
@@ -1117,5 +1134,18 @@ ui.fetchForm.addEventListener("submit", submitManualFetch);
 ui.manualPostForm.addEventListener("submit", submitManualPost);
 ui.manualPhotoForm.addEventListener("submit", submitManualPhoto);
 loadGallery();
-initializeManualFetch();
-initializeManualPhoto();
+if (!cloud) { initializeManualFetch(); initializeManualPhoto(); }
+else {
+  ui.refresh.textContent = "↻ 重新讀取相簿";
+  cloud.onGalleryChange(loadGallery);
+  window.addEventListener("sunnyegg-job-queued", () => { if (controlMode) reconcileManualStatus(); });
+  cloud.subscribe(allowed => {
+    controlMode = controlRequested && allowed === true;
+    document.querySelectorAll("[data-control-only]").forEach(node => { node.hidden = !controlMode; });
+    clearTimeout(manualPollTimer); clearTimeout(manualPhotoPollTimer);
+    manualOptions = null; manualRun = null;
+    setManualBusy(true); setManualPhotoBusy(!controlMode);
+    if (controlMode) { initializeManualFetch(); initializeManualPhoto(); }
+    loadGallery();
+  });
+}

@@ -1,12 +1,16 @@
 # SunnyEgg
 
+## Firebase deployment
+
+The gallery can run on Firebase Hosting, with selected photos stored in the private SunnyEggMedia GitHub repository and copied to public Hosting during deployment, plus Google sign-in for administrator controls. No Blaze, Firebase Storage or Cloud Functions are required. Facebook fetching and recognition run on a local worker. See [Firebase deployment and worker setup](docs/firebase.md) for project setup, existing-photo migration and GitHub push deployment.
+
 SunnyEgg is a local photo gallery and processing tool for photos from a Facebook Page. It can discover posts with a dedicated browser profile, download photo attachments through the Graph API, compare them with locally stored reference photos, and show selected photos in a local web page. Video processing is outside the current workflow.
 
 ## Run locally
 
 Run all commands from the SunnyEgg project directory. On WSL, use the Ubuntu terminal, not Windows PowerShell. Keep the project in the Linux filesystem (for example, `~/sides/SunnyEgg`).
 
-Requirements: Node.js 20 or later. The Python scripts require Python 3.9 or later; use Python 3.11 or 3.12 for the optional recognition dependencies with their current version constraints.
+Requirements: Node.js 22 or later. The Python scripts require Python 3.9 or later; use Python 3.11 or 3.12 for the optional recognition dependencies with their current version constraints.
 
 ### Ubuntu / WSL setup
 
@@ -100,13 +104,7 @@ npm start
 
 ## Daily processing
 
-The schedule and processing options are in `config/job.json`. The default schedule is 20:00 in the `Asia/Taipei` time zone. To run the scheduler, keep the host available and start:
-
-```bash
-.venv/bin/python scripts/scheduler.py --env-file .env
-```
-
-The scheduler uses the dedicated browser profile and local model and reference files. It does not run while the host is off. On WSL, it also stops when Windows sleeps or the WSL instance shuts down. `deploy/` contains example systemd files for a Linux host; they are not installed automatically. To use them on WSL, enable systemd and adjust their `/opt/sunnyegg` paths to your project location.
+The schedule and processing options are in `config/job.json`. Daily 20:00 Asia/Taipei now creates an **awaiting approval** cloud job. Sign in at `?ctrl=1` and click consent before the local worker fetches Facebook. Run `npm run firebase:worker` for cloud jobs; the old always-on Python scheduler no longer fetches automatically. See [free Firebase deployment](docs/firebase.md) for credentials and GitHub Actions setup.
 
 ## Local data and privacy
 
@@ -117,3 +115,5 @@ Media, reference photos, recognition feedback, browser sign-in data, downloaded 
 ```bash
 npm test
 ```
+
+Automated verification uses fixture media and mocked Facebook requests. Live Facebook API calls, media downloads and likes require explicit user authorization for that test. See [AGENTS.md](AGENTS.md).

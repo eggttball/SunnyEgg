@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { attachAbort } from './process-abort.mjs';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -142,7 +143,7 @@ export function normalizePostUrl(value) {
   throw new ManualFetchError(400, MESSAGES.invalid_post_url);
 }
 
-function safeResult(report) {
+export function safeResult(report) {
   if (!report || typeof report !== 'object' || !TERMINAL_STATES.has(report.state)) throw new Error('Invalid job result');
   const counts = {};
   for (const key of COUNT_FIELDS) {
@@ -206,9 +207,10 @@ export function createManualFetchController({ root, runner = createManualFetchRu
 
 export function createManualFetchRunner({ root }) {
   const projectRoot = resolve(root);
-  return async ({ startDate, endDate, postUrl, onProgress }) => {
+  return async ({ startDate, endDate, postUrl, onProgress, signal }) => {
     if (postUrl !== undefined) postUrl = normalizePostUrl(postUrl);
     else if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) throw new Error('Invalid date range');
+    signal?.throwIfAborted();
     const venvPython = resolve(projectRoot, '.venv/bin/python');
     const executable = await access(venvPython, constants.X_OK).then(() => venvPython, () => 'python3');
     const progressEnabled = typeof onProgress === 'function';
@@ -224,7 +226,8 @@ export function createManualFetchRunner({ root }) {
     else args.push('--start-date', startDate, '--end-date', endDate, '--max-scrolls', '100');
     if (progressId) args.push('--progress-id', progressId);
     return new Promise((resolveReport, reject) => {
-      const child = spawn(executable, args, { cwd: projectRoot, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(executable, args, { cwd: projectRoot, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+      const detachAbort = attachAbort(child, signal);
       const chunks = [];
       let bytes = 0;
       let overflow = false;
@@ -256,10 +259,12 @@ export function createManualFetchRunner({ root }) {
       });
       child.stderr.on('data', () => {});
       child.on('error', async () => {
+        detachAbort();
         await cleanup();
         reject(new Error('Photo job could not start'));
       });
       child.on('close', async (code, signal) => {
+        detachAbort();
         await cleanup();
         try {
           if (overflow || signal) throw new Error();

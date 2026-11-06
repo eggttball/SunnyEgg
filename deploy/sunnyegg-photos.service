@@ -8,5 +8,5 @@ Type=oneshot
 User=sunnyegg
 WorkingDirectory=/opt/sunnyegg
 EnvironmentFile=/opt/sunnyegg/.env
-ExecStart=/opt/sunnyegg/.venv/bin/python /opt/sunnyegg/scripts/scheduler.py --once --root /opt/sunnyegg
+ExecStart=/usr/bin/node /opt/sunnyegg/scripts/firebase-worker.mjs --schedule-only
 TimeoutStartSec=30min
