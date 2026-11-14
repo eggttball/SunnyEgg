@@ -229,6 +229,27 @@ test('default gallery displays only per-photo candidate results from mixed state
   assert.equal(filters.find(button => button.dataset.filter === 'candidate').attributes['aria-pressed'], 'true');
 });
 
+test('original photo icon is centered in the image stage and the post title links to its source', async () => {
+  const post = photoPost(['candidate']);
+  post.assets[0].sourcePhotoId = '456';
+  const { content } = await runApp([post]);
+  const photoLink = content.querySelectorAll('.photo-source-icon')[0];
+  const imageStage = content.querySelectorAll('.media-image-stage')[0];
+  const postTitleLink = content.querySelectorAll('.post-title-link')[0];
+
+  assert.equal(photoLink.attributes['aria-label'], '在新分頁開啟這張照片的 Facebook 原照');
+  assert.equal(photoLink.title, '查看原照片');
+  assert.equal(photoLink.href, 'https://www.facebook.com/photo/?fbid=456');
+  assert.equal(imageStage.querySelectorAll('.photo-source-icon').length, 1);
+  assert.equal(content.querySelectorAll('.media-caption').length, 0, 'a candidate with no other caption details has no empty footer');
+  assert.equal(content.querySelectorAll('.source-link').length, 0, 'the separate post link is hidden');
+  assert.equal(postTitleLink.attributes['aria-label'], '本機照片（在新分頁開啟）');
+  assert.equal(postTitleLink.textContent, post.title);
+  assert.equal(postTitleLink.href, post.sourceUrl);
+  assert.equal(postTitleLink.target, '_blank');
+  assert.equal(postTitleLink.rel, 'noopener noreferrer');
+});
+
 test('normal gallery hides daily, manual and audit controls plus photo filter buttons', async () => {
   for (const search of ['', '?ctrl=0', '?ctrl=01', '?ctrl=true']) {
     const { document, filters, content } = await runApp([photoPost(['no_face'])], {}, { search });

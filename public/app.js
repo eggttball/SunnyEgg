@@ -434,18 +434,21 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
   imageButton.setAttribute("aria-label", `開啟幻燈片，第 ${slideshowIndex + 1} 張，共 ${slideshowItems.length} 張`);
   imageButton.addEventListener("click", () => openSlideshow(slideshowItems, slideshowIndex));
   imageButton.append(image);
-  card.append(imageButton);
+  const imageStage = element("div", "media-image-stage");
+  imageStage.append(imageButton);
   const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
     ? photoId : null;
   const caption = element("figcaption", "media-caption");
   if (candidatePhotoId) {
-    const originalLink = element("a", "photo-source-link", "查看原照片 ↗");
+    const originalLink = element("a", "photo-source-link icon-link photo-source-icon", "查看原照片 ↗");
     originalLink.href = "https://www.facebook.com/photo/?fbid=" + encodeURIComponent(candidatePhotoId);
     originalLink.target = "_blank";
     originalLink.rel = "noopener noreferrer";
     originalLink.setAttribute("aria-label", "在新分頁開啟這張照片的 Facebook 原照");
-    caption.append(originalLink);
+    originalLink.title = "查看原照片";
+    imageStage.append(originalLink);
   }
+  card.append(imageStage);
   const labels = {
     no_match: "人臉比對未命中 · 不代表孩子沒有出現",
     no_face: "未偵測到人臉 · 尚無可供比對的人臉",
@@ -470,7 +473,7 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
       caption.append(error);
     }
   }
-  card.append(caption);
+  if (caption.children.length) card.append(caption);
   return card;
 }
 
@@ -488,11 +491,16 @@ function postCard(post, displayedPhotos, monthAnchorId=null, latest=false, slide
   article.dataset.photoLayout = displayedPhotos.length >= 3 ? "three-plus" : String(displayedPhotos.length);
   const header = element("div", "post-header");
   const heading = element("div", "post-heading");
-  heading.append(element("h3", "", post.title || "照片貼文"));
+  const title = post.title || "照片貼文";
+  const titleHeading = element("h3");
+  const titleLink = sourceLink(post.sourceUrl, title);
+  if (titleLink) {
+    titleLink.className = "post-title-link";
+    titleHeading.append(titleLink);
+  } else titleHeading.textContent = title;
+  heading.append(titleHeading);
   const meta = element("div", "post-meta");
   meta.append(element("span", "", dateLabel(dateKey(post.publishedAt))));
-  const link = sourceLink(post.sourceUrl);
-  if (link) meta.append(link);
   heading.append(meta);
   header.append(heading);
   article.append(header);
