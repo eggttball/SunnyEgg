@@ -43,7 +43,7 @@
 .post-card[data-photo-layout="1"] .media-grid{grid-template-columns:1fr}
 .post-card[data-photo-layout="2"] .media-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 .post-card[data-photo-layout="three-plus"] .media-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
-@media(max-width:760px){.post-list{grid-template-columns:minmax(0,1fr)}.post-card[data-photo-layout]{grid-column:span 1}.post-card[data-photo-layout="1"] .media-grid,.post-card[data-photo-layout="2"] .media-grid,.post-card[data-photo-layout="three-plus"] .media-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){.post-list{grid-template-columns:minmax(0,1fr)}.post-card[data-photo-layout]{grid-column:span 1}.post-card[data-photo-layout="1"] .media-grid,.post-card[data-photo-layout="2"] .media-grid,.post-card[data-photo-layout="three-plus"] .media-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .post-heading{flex:1;min-width:0}
 .post-meta{align-items:center;width:100%}
 .post-meta .source-link{margin-left:auto;margin-top:0}
