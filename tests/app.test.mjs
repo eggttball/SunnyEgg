@@ -250,6 +250,20 @@ test('original photo icon is centered in the image stage and the post title link
   assert.equal(postTitleLink.rel, 'noopener noreferrer');
 });
 
+test('each post date has a link back to the page top', async () => {
+  const first = photoPost(['candidate'], { id: 'first', publishedAt: '2026-11-01T12:00:00Z' });
+  const second = photoPost(['candidate'], { id: 'second', publishedAt: '2026-10-01T12:00:00Z' });
+  const { content } = await runApp([first, second]);
+  const links = content.querySelectorAll('.post-top-link');
+
+  assert.equal(links.length, 2);
+  for (const link of links) {
+    assert.equal(link.href, '#page-top');
+    assert.equal(link.attributes['aria-label'], '回到頁首');
+    assert.equal(link.textContent, '↑ 頁首');
+  }
+});
+
 test('normal gallery hides daily, manual and audit controls plus photo filter buttons', async () => {
   for (const search of ['', '?ctrl=0', '?ctrl=01', '?ctrl=true']) {
     const { document, filters, content } = await runApp([photoPost(['no_face'])], {}, { search });

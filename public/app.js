@@ -501,6 +501,10 @@ function postCard(post, displayedPhotos, monthAnchorId=null, latest=false, slide
   heading.append(titleHeading);
   const meta = element("div", "post-meta");
   meta.append(element("span", "", dateLabel(dateKey(post.publishedAt))));
+  const topLink = element("a", "post-top-link", "↑ 頁首");
+  topLink.href = "#page-top";
+  topLink.setAttribute("aria-label", "回到頁首");
+  meta.append(topLink);
   heading.append(meta);
   header.append(heading);
   article.append(header);
