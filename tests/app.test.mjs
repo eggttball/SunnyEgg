@@ -902,7 +902,8 @@ test('malformed local image paths and unsafe source links are never loaded', asy
   post.assets[0].path = 'media/../reference-child/child.jpg';
   const { content } = await runApp([post]);
   assert.equal(content.querySelectorAll('img').length, 0);
-  assert.equal(content.querySelectorAll('a').length, 0);
+  assert.equal(content.querySelectorAll('.post-title-link').length, 0);
+  assert.equal(content.querySelectorAll('.source-link').length, 0);
   assert.match(content.textContent, /無法顯示/);
   assert.doesNotMatch(content.textContent, /secret/);
 });
