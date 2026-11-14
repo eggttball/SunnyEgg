@@ -89,6 +89,11 @@ function sourceLink(url, label = "查看原貼文 ↗") {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:" || !(parsed.hostname === "facebook.com" || parsed.hostname.endsWith(".facebook.com")) || parsed.username || parsed.password) return null;
+    const legacyPost = parsed.pathname.match(/^\/1605220068286750\/posts\/([A-Za-z0-9_.:-]+)\/?$/);
+    if (legacyPost) {
+      parsed.pathname = "/permalink.php";
+      parsed.search = new URLSearchParams({ story_fbid: legacyPost[1], id: "100063963161862" }).toString();
+    }
     const link = element("a", "source-link", label);
     link.href = parsed.href;
     link.target = "_blank";

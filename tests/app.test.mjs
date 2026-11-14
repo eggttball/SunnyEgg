@@ -250,6 +250,16 @@ test('original photo icon is centered in the image stage and the post title link
   assert.equal(postTitleLink.rel, 'noopener noreferrer');
 });
 
+test('legacy post links use the current Facebook permalink format', async () => {
+  const post = photoPost(['candidate'], {
+    sourceUrl: 'https://www.facebook.com/1605220068286750/posts/1613495637459193',
+  });
+  const { content } = await runApp([post]);
+
+  assert.equal(content.querySelectorAll('.post-title-link')[0].href,
+    'https://www.facebook.com/permalink.php?story_fbid=1613495637459193&id=100063963161862');
+});
+
 test('each post date has a link back to the page top', async () => {
   const first = photoPost(['candidate'], { id: 'first', publishedAt: '2026-11-01T12:00:00Z' });
   const second = photoPost(['candidate'], { id: 'second', publishedAt: '2026-10-01T12:00:00Z' });
