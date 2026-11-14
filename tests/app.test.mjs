@@ -260,6 +260,24 @@ test('legacy post links use the current Facebook permalink format', async () => 
     'https://www.facebook.com/permalink.php?story_fbid=1613495637459193&id=100063963161862');
 });
 
+test('landscape photos reserve room for the original-photo icon', async () => {
+  const portrait = photoPost(['candidate'], { id: 'portrait' });
+  const landscape = photoPost(['candidate'], { id: 'landscape' });
+  const { content } = await runApp([portrait, landscape]);
+  const images = content.querySelectorAll('img');
+  const stages = content.querySelectorAll('.media-image-stage');
+
+  images[0].naturalWidth = 720;
+  images[0].naturalHeight = 960;
+  images[0].dispatch('load');
+  images[1].naturalWidth = 960;
+  images[1].naturalHeight = 720;
+  images[1].dispatch('load');
+
+  assert.doesNotMatch(stages[0].className, /landscape-photo/);
+  assert.match(stages[1].className, /landscape-photo/);
+});
+
 test('each post date has a link back to the page top', async () => {
   const first = photoPost(['candidate'], { id: 'first', publishedAt: '2026-11-01T12:00:00Z' });
   const second = photoPost(['candidate'], { id: 'second', publishedAt: '2026-10-01T12:00:00Z' });

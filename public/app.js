@@ -433,7 +433,6 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
     message.setAttribute("role", "status");
     card.prepend(message);
   });
-  image.src = url;
   const imageButton = element("button", "media-image-button");
   imageButton.type = "button";
   imageButton.setAttribute("aria-label", `開啟幻燈片，第 ${slideshowIndex + 1} 張，共 ${slideshowItems.length} 張`);
@@ -441,6 +440,9 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
   imageButton.append(image);
   const imageStage = element("div", "media-image-stage");
   imageStage.append(imageButton);
+  image.addEventListener("load", () => {
+    imageStage.classList.toggle("landscape-photo", image.naturalWidth >= image.naturalHeight);
+  });
   const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
     ? photoId : null;
   const caption = element("figcaption", "media-caption");
@@ -454,6 +456,7 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
     imageStage.append(originalLink);
   }
   card.append(imageStage);
+  image.src = url;
   const labels = {
     no_match: "人臉比對未命中 · 不代表孩子沒有出現",
     no_face: "未偵測到人臉 · 尚無可供比對的人臉",

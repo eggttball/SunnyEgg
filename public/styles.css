@@ -420,6 +420,10 @@ button:focus-visible,a:focus-visible,select:focus-visible{outline-color:#9a7924;
 .media-image-button{border-radius:12px 12px 0 0}
 .media-image-button::after{right:15px;bottom:9px}
 @media(max-width:760px){
-  .media-image-stage{padding-top:34px}
-  .media-image-stage .photo-source-link.icon-link{top:3px;right:6px}
+  .media-image-stage .photo-source-link.icon-link{top:12px;right:0}
+  .media-image-stage.landscape-photo{display:grid;grid-template-columns:minmax(0,1fr) 35px}
+  .media-image-stage.landscape-photo .media-image-button{grid-column:1}
+  .media-image-stage.landscape-photo .photo-source-link.icon-link{
+    position:static;grid-column:2;grid-row:1;align-self:start;justify-self:end;margin-top:12px;
+  }
 }
