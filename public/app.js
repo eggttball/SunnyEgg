@@ -63,8 +63,8 @@ let slideshowTimer = null;
 let slideshowTimerSequence = 0;
 let slideshowClosingTimer = null;
 let slideshowEffectSequence = 0;
-const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur", "rotate", "flip", "wipe-x", "wipe-y"];
-const slideshowDirectionalEffectNames = ["slide-x", "slide-y", "rotate", "flip", "wipe-x", "wipe-y"];
+const slideshowEffectNames = ["slide-x", "fade", "slide-y", "blur", "wipe-x", "wipe-y"];
+const slideshowDirectionalEffectNames = ["slide-x", "slide-y", "wipe-x", "wipe-y"];
 const slideshowEffectClasses = [
   ...slideshowEffectNames.map(name => `effect-${name}`),
   ...slideshowDirectionalEffectNames.flatMap(name => [`effect-${name}-next`, `effect-${name}-previous`]),
@@ -122,8 +122,38 @@ function showSlideshowImage(direction=0) {
     : effectName ? `effect-${effectName}` : null;
   slideshow.image.classList.remove(...slideshowEffectClasses);
   if (effectClass) {
-    slideshow.image.classList.add("effect-transition-setup", effectClass);
+    slideshow.image.classList.add("effect-transition-setup");
+  }
+  let transitionStarted = false;
+  const startTransition = () => {
+    if (transitionStarted) return;
+    transitionStarted = true;
+    slideshow.image.removeEventListener("load", startTransition);
+    slideshow.image.removeEventListener("error", cancelTransition);
+    if (effectSequence !== slideshowEffectSequence) return;
+    if (!effectClass) return;
+    slideshow.image.classList.add(effectClass);
     void slideshow.image.offsetWidth;
+    requestAnimationFrame(() => {
+      if (effectSequence !== slideshowEffectSequence) return;
+      slideshow.image.classList.remove("effect-transition-setup");
+      requestAnimationFrame(() => {
+        if (effectSequence !== slideshowEffectSequence) return;
+        slideshow.image.classList.remove(effectClass);
+      });
+    });
+  };
+  const cancelTransition = () => {
+    if (transitionStarted) return;
+    transitionStarted = true;
+    slideshow.image.removeEventListener("load", startTransition);
+    slideshow.image.removeEventListener("error", cancelTransition);
+    if (effectSequence !== slideshowEffectSequence) return;
+    slideshow.image.classList.remove("effect-transition-setup");
+  };
+  if (effectClass) {
+    slideshow.image.addEventListener("load", startTransition);
+    slideshow.image.addEventListener("error", cancelTransition);
   }
   slideshow.image.src = item.src;
   slideshow.image.alt = `${item.title}，${item.date}`;
@@ -133,16 +163,7 @@ function showSlideshowImage(direction=0) {
   slideshow.previous.disabled = slideshowItems.length < 2;
   slideshow.next.disabled = slideshowItems.length < 2;
   slideshow.autoplay.disabled = slideshowItems.length < 2;
-  if (effectClass) {
-    requestAnimationFrame(() => {
-      if (effectSequence !== slideshowEffectSequence) return;
-      slideshow.image.classList.remove("effect-transition-setup");
-      requestAnimationFrame(() => {
-        if (effectSequence !== slideshowEffectSequence) return;
-        slideshow.image.classList.remove(effectClass);
-      });
-    });
-  }
+  if (slideshow.image.complete && slideshow.image.naturalWidth > 0) startTransition();
 }
 
 function randomSlideshowEffect() {
@@ -166,7 +187,7 @@ function scheduleSlideshowAutoplay() {
     slideshowTimer = null;
     moveSlideshow(1);
     scheduleSlideshowAutoplay();
-  }, 3000);
+  }, 5000);
 }
 
 function navigateSlideshow(direction) {

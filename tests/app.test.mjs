@@ -45,8 +45,9 @@ class Node {
   replaceWith(_) {}
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) { (this.events[name] ||= []).push(listener); }
+  removeEventListener(name, listener) { this.events[name] = (this.events[name] || []).filter(item => item !== listener); }
   click() { for (const listener of this.events.click || []) listener(); }
-  dispatch(name) { for (const listener of this.events[name] || []) listener({ preventDefault() {} }); }
+  dispatch(name) { for (const listener of [...(this.events[name] || [])]) listener({ preventDefault() {} }); }
   querySelectorAll(selector) {
     const matches = node => selector.startsWith('.')
       ? node.className.split(' ').includes(selector.slice(1))
@@ -141,6 +142,7 @@ async function runApp(posts, extra = {}, manual = {}) {
   const requests = [];
   const requestDetails = [];
   const timers = new Map();
+  const animationFrames = [];
   let timerId = 0;
   const setTimer = (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; };
   let status = manual.initialStatus || manualStatus('idle');
@@ -157,7 +159,7 @@ async function runApp(posts, extra = {}, manual = {}) {
       matchMedia: () => ({ matches: false }), setTimeout: setTimer, clearTimeout: id => timers.delete(id),
       ...(cloud ? { SunnyEggCloud: cloud } : {}),
     },
-    requestAnimationFrame: callback => callback(),
+    requestAnimationFrame: callback => animationFrames.push(callback),
     setTimeout: setTimer,
     clearTimeout: id => timers.delete(id),
     Option: function(text, value) { const node = new Node('option'); node.textContent = text; node.value = value; return node; },
@@ -185,8 +187,11 @@ async function runApp(posts, extra = {}, manual = {}) {
     slideshow: {
       next: document.querySelector('#photo-viewer-next'),
       autoplay: document.querySelector('#photo-viewer-autoplay'),
+      image: document.querySelector('#photo-viewer-image'),
       prepare: items => vm.runInContext(`slideshowItems = ${JSON.stringify(items)}; slideshowIndex = 0;`, context),
       index: () => vm.runInContext('slideshowIndex', context),
+      show: direction => vm.runInContext(`showSlideshowImage(${direction || 0})`, context),
+      flushAnimationFrame: () => animationFrames.shift()?.(),
     },
     timers,
     authorize: async allowed => { authListener(allowed); await tick(); },
@@ -259,17 +264,37 @@ test('manual slideshow navigation restarts autoplay and invalidates a queued tim
   const app = await runApp([]);
   app.slideshow.prepare([0, 1, 2].map(index => ({ src: `/photo-${index}.jpg`, title: '貼文', date: '日期' })));
   app.slideshow.autoplay.click();
-  const [oldTimerId, oldTimer] = [...app.timers].find(([, timer]) => timer.delay === 3000);
+  const [oldTimerId, oldTimer] = [...app.timers].find(([, timer]) => timer.delay === 5000);
 
   app.slideshow.next.click();
   assert.equal(app.slideshow.index(), 1);
-  const [newTimerId, newTimer] = [...app.timers].find(([, timer]) => timer.delay === 3000);
+  const [newTimerId, newTimer] = [...app.timers].find(([, timer]) => timer.delay === 5000);
   assert.notEqual(newTimerId, oldTimerId);
 
   oldTimer.callback();
   assert.equal(app.slideshow.index(), 1, 'a due timer from before the click cannot advance again');
   newTimer.callback();
   assert.equal(app.slideshow.index(), 2, 'autoplay continues after the refreshed interval');
+});
+
+test('slideshow transition starts after the next image loads', async () => {
+  const app = await runApp([]);
+  app.slideshow.prepare([0, 1].map(index => ({ src: `/photo-${index}.jpg`, title: '貼文', date: '日期' })));
+  app.slideshow.show();
+  app.slideshow.image.dispatch('load');
+
+  app.slideshow.next.click();
+  assert.equal(app.slideshow.image.src, '/photo-1.jpg');
+  assert.match(app.slideshow.image.className, /effect-transition-setup/);
+  assert.doesNotMatch(app.slideshow.image.className, /effect-(?:slide|fade|zoom|blur|rotate|flip|wipe)/);
+
+  app.slideshow.image.dispatch('load');
+  assert.match(app.slideshow.image.className, /effect-(?:slide|fade|zoom|blur|rotate|flip|wipe)/);
+  app.slideshow.flushAnimationFrame();
+  assert.doesNotMatch(app.slideshow.image.className, /effect-transition-setup/);
+  assert.match(app.slideshow.image.className, /effect-(?:slide|fade|zoom|blur|rotate|flip|wipe)/);
+  app.slideshow.flushAnimationFrame();
+  assert.doesNotMatch(app.slideshow.image.className, /effect-(?:slide|fade|zoom|blur|rotate|flip|wipe)/);
 });
 
 test('original photo icon is centered in the image stage and the post title links to its source', async () => {
