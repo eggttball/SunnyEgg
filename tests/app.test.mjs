@@ -17,11 +17,24 @@ class Node {
     this.dataset = {};
     this.value = '';
     this.text = '';
-    this.classList = { toggle: (name, enabled) => {
-      const classes = new Set(this.className.split(' ').filter(Boolean));
-      if (enabled) classes.add(name); else classes.delete(name);
-      this.className = [...classes].join(' ');
-    } };
+    this.classList = {
+      add: (...names) => {
+        const classes = new Set(this.className.split(' ').filter(Boolean));
+        names.forEach(name => classes.add(name));
+        this.className = [...classes].join(' ');
+      },
+      remove: (...names) => {
+        const classes = new Set(this.className.split(' ').filter(Boolean));
+        names.forEach(name => classes.delete(name));
+        this.className = [...classes].join(' ');
+      },
+      contains: name => this.className.split(' ').includes(name),
+      toggle: (name, enabled) => {
+        const classes = new Set(this.className.split(' ').filter(Boolean));
+        if (enabled) classes.add(name); else classes.delete(name);
+        this.className = [...classes].join(' ');
+      },
+    };
   }
   set textContent(value) { this.text = String(value); this.children = []; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
@@ -129,6 +142,7 @@ async function runApp(posts, extra = {}, manual = {}) {
   const requestDetails = [];
   const timers = new Map();
   let timerId = 0;
+  const setTimer = (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; };
   let status = manual.initialStatus || manualStatus('idle');
   let nextResponse = { ok: true, json: async () => ({
     version: 1, posts, sourcePage: 'https://www.facebook.com/profile.php?id=100063963161862',
@@ -138,8 +152,13 @@ async function runApp(posts, extra = {}, manual = {}) {
   const cloud = manual.cloud ? { onGalleryChange: () => {}, subscribe: listener => { authListener = listener; listener(false); },
     request: (url, init) => context.fetch(url, init) } : undefined;
   const context = vm.createContext({
-    document, URL, URLSearchParams, Intl, AbortController, window: { addEventListener: () => {}, location: { search: manual.search || '' }, ...(cloud ? { SunnyEggCloud: cloud } : {}) },
-    setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
+    document, URL, URLSearchParams, Intl, AbortController, window: {
+      addEventListener: () => {}, location: { search: manual.search || '' },
+      matchMedia: () => ({ matches: false }), setTimeout: setTimer, clearTimeout: id => timers.delete(id),
+      ...(cloud ? { SunnyEggCloud: cloud } : {}),
+    },
+    requestAnimationFrame: callback => callback(),
+    setTimeout: setTimer,
     clearTimeout: id => timers.delete(id),
     Option: function(text, value) { const node = new Node('option'); node.textContent = text; node.value = value; return node; },
     fetch: async (url, init = {}) => {
@@ -163,6 +182,13 @@ async function runApp(posts, extra = {}, manual = {}) {
   await tick();
   assert.equal(document.querySelector('#api-error').hidden, true, 'app initialized successfully');
   return { document, filters, requests, requestDetails, content: document.querySelector('#gallery-content'),
+    slideshow: {
+      next: document.querySelector('#photo-viewer-next'),
+      autoplay: document.querySelector('#photo-viewer-autoplay'),
+      prepare: items => vm.runInContext(`slideshowItems = ${JSON.stringify(items)}; slideshowIndex = 0;`, context),
+      index: () => vm.runInContext('slideshowIndex', context),
+    },
+    timers,
     authorize: async allowed => { authListener(allowed); await tick(); },
     galleryPostIds: () => Array.from(vm.runInContext('gallery.posts.map(post => post.id)', context)),
     setManualStatus: value => { status = value; },
@@ -227,6 +253,23 @@ test('default gallery displays only per-photo candidate results from mixed state
   assert.equal(document.querySelector('#count-candidate').textContent, '1');
   assert.equal(document.querySelector('#count-all').textContent, '4');
   assert.equal(filters.find(button => button.dataset.filter === 'candidate').attributes['aria-pressed'], 'true');
+});
+
+test('manual slideshow navigation restarts autoplay and invalidates a queued timer', async () => {
+  const app = await runApp([]);
+  app.slideshow.prepare([0, 1, 2].map(index => ({ src: `/photo-${index}.jpg`, title: '貼文', date: '日期' })));
+  app.slideshow.autoplay.click();
+  const [oldTimerId, oldTimer] = [...app.timers].find(([, timer]) => timer.delay === 3000);
+
+  app.slideshow.next.click();
+  assert.equal(app.slideshow.index(), 1);
+  const [newTimerId, newTimer] = [...app.timers].find(([, timer]) => timer.delay === 3000);
+  assert.notEqual(newTimerId, oldTimerId);
+
+  oldTimer.callback();
+  assert.equal(app.slideshow.index(), 1, 'a due timer from before the click cannot advance again');
+  newTimer.callback();
+  assert.equal(app.slideshow.index(), 2, 'autoplay continues after the refreshed interval');
 });
 
 test('original photo icon is centered in the image stage and the post title links to its source', async () => {

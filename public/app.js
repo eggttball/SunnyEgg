@@ -60,6 +60,7 @@ let slideshowItems = [];
 let slideshowIndex = 0;
 let swipeStartX = null;
 let slideshowTimer = null;
+let slideshowTimerSequence = 0;
 let slideshowClosingTimer = null;
 let slideshowEffectSequence = 0;
 const slideshowEffectNames = ["slide-x", "fade", "zoom-in", "zoom-out", "slide-y", "blur", "rotate", "flip", "wipe-x", "wipe-y"];
@@ -157,6 +158,22 @@ function moveSlideshow(direction) {
   showSlideshowImage(direction);
 }
 
+function scheduleSlideshowAutoplay() {
+  window.clearTimeout(slideshowTimer);
+  const timerSequence = ++slideshowTimerSequence;
+  slideshowTimer = window.setTimeout(() => {
+    if (timerSequence !== slideshowTimerSequence) return;
+    slideshowTimer = null;
+    moveSlideshow(1);
+    scheduleSlideshowAutoplay();
+  }, 3000);
+}
+
+function navigateSlideshow(direction) {
+  moveSlideshow(direction);
+  if (slideshowTimer !== null) scheduleSlideshowAutoplay();
+}
+
 function openSlideshow(items, index) {
   const selected = items[index];
   slideshowItems = items.filter(item => item && typeof item.src === "string");
@@ -172,7 +189,8 @@ function openSlideshow(items, index) {
 }
 
 function stopSlideshowAutoplay() {
-  window.clearInterval(slideshowTimer);
+  slideshowTimerSequence++;
+  window.clearTimeout(slideshowTimer);
   slideshowTimer = null;
   slideshow.autoplay.textContent = "▶ 自動播放";
   slideshow.autoplay.setAttribute("aria-pressed", "false");
@@ -186,7 +204,7 @@ function toggleSlideshowAutoplay() {
   if (slideshowItems.length < 2) return;
   slideshow.autoplay.textContent = "Ⅱ 暫停播放";
   slideshow.autoplay.setAttribute("aria-pressed", "true");
-  slideshowTimer = window.setInterval(() => moveSlideshow(1), 3000);
+  scheduleSlideshowAutoplay();
 }
 
 function closeSlideshow() {
@@ -207,11 +225,11 @@ function closeSlideshow() {
 
 slideshow.close.addEventListener("click", closeSlideshow);
 slideshow.autoplay.addEventListener("click", toggleSlideshowAutoplay);
-slideshow.previous.addEventListener("click", () => moveSlideshow(-1));
-slideshow.next.addEventListener("click", () => moveSlideshow(1));
+slideshow.previous.addEventListener("click", () => navigateSlideshow(-1));
+slideshow.next.addEventListener("click", () => navigateSlideshow(1));
 slideshow.dialog.addEventListener("keydown", event => {
-  if (event.key === "ArrowLeft") {event.preventDefault();moveSlideshow(-1);}
-  else if (event.key === "ArrowRight") {event.preventDefault();moveSlideshow(1);}
+  if (event.key === "ArrowLeft") {event.preventDefault();navigateSlideshow(-1);}
+  else if (event.key === "ArrowRight") {event.preventDefault();navigateSlideshow(1);}
 });
 slideshow.dialog.addEventListener("click", event => {
   if (event.target === slideshow.dialog) closeSlideshow();
@@ -239,7 +257,7 @@ slideshow.stage.addEventListener("touchend", event => {
   if (swipeStartX === null || !event.changedTouches.length) return;
   const distance = event.changedTouches[0].clientX - swipeStartX;
   swipeStartX = null;
-  if (Math.abs(distance) >= 48) moveSlideshow(distance < 0 ? 1 : -1);
+  if (Math.abs(distance) >= 48) navigateSlideshow(distance < 0 ? 1 : -1);
 }, { passive: true });
 slideshow.stage.addEventListener("touchcancel", () => { swipeStartX = null; }, { passive: true });
 
