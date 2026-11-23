@@ -279,10 +279,10 @@ h1::after{content:"";display:block;width:61px;height:4px;margin-top:17px;border-
   border-color:#e4e7de;border-radius:17px;
   background:#fffefa;
   box-shadow:0 7px 20px rgba(42,64,49,.045);
-  transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;
+  transition:box-shadow .2s ease,border-color .2s ease;
 }
 .post-card::before{content:"";position:absolute;top:0;left:20px;width:38px;height:3px;border-radius:0 0 4px 4px;background:linear-gradient(90deg,#d7b54e,#86a180)}
-.post-card:hover{z-index:1;border-color:#d7e0d3;box-shadow:0 12px 27px rgba(42,64,49,.075);transform:translateY(-2px)}
+.post-card:hover{z-index:1;border-color:#d7e0d3;box-shadow:0 12px 27px rgba(42,64,49,.075)}
 .post-header{padding:20px 21px 16px;background:linear-gradient(180deg,#fcfbf5,#fffefa)}
 .post-header h3{color:#30473b;font-size:15px;font-weight:650;line-height:1.7}
 .post-meta{gap:9px;margin-top:10px;color:#829087;font-size:10px}
