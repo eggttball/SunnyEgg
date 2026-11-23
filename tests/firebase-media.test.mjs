@@ -51,6 +51,29 @@ test('a stale media publisher cannot prune a replacement worker file', async t =
   assert.equal(await readFile(join(root, 'photos/fb_1/replacement.jpg'), 'utf8'), 'replacement');
 });
 
+test('a staged photo retries deployment when the media repository has no new commit', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sunnyegg-media-retry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'photos'));
+  const commands = [], dispatches = [];
+  const bucket = new module.GitMediaBucket(root, {
+    git: async (command, args) => { commands.push(args); return { stdout: '' }; },
+    dispatch: async (command, args) => { dispatches.push([command, args]); return { stdout: '' }; },
+  });
+  const repository = {
+    assertOwnership: async () => {},
+    listPhotos: async () => [{ key: 'fb_123', status: 'staged', objectPath: 'photos/fb_123/image.jpg',
+      imageHash: 'hash', contentType: 'image/jpeg', size: 4, pendingPayload: { imageHash: 'hash' },
+      publicationToken: 'token', revision: 1 }],
+  };
+
+  await bucket.commit(repository);
+
+  assert.ok(commands.some(args => args[0] === 'push'));
+  assert.deepEqual(dispatches, [['gh', ['workflow', 'run', 'notify-sunnyegg.yml', '--repo',
+    'eggttball/SunnyEggMedia', '--ref', 'main']]]);
+});
+
 test('the media checkout lock serializes workers and can be released', async t => {
   const root = await mkdtemp(join(tmpdir(), 'sunnyegg-media-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -6,6 +6,8 @@
 
 本機 worker 使用原有 Chromium 登入與 Python 模型抓取、辨識照片。只有入選、手動加入且未排除的照片，才會寫入私人 `eggttball/SunnyEggMedia`。GitHub Actions 從私人 repo 取出目前仍入選的檔案，複製到 Firebase Hosting。Firestore 紀錄只在部署成功後公開，因此不會先顯示尚未部署的照片。
 
+若照片已在媒體 repo、Firestore 狀態仍為 `staged`（等待部署），worker 會重新觸發部署 workflow，即使重試沒有產生新的 Git commit；工作完成訊息不代表 Hosting 已完成發布。
+
 私人 repo 是照片的來源儲存位置；Firebase Hosting 上的複本公開供網站訪客查看。參考照片、人臉特徵、未入選照片、Facebook 登入設定檔及私鑰都留在本機，不能放到兩個 repo。
 
 管理員排除照片後，Firestore 立即隱藏該照片。本機 worker 收到排除紀錄後，更新本機負例並從照片 repo 刪除檔案；下次成功部署也會移除 Hosting 的檔案。worker 離線時，刪除檔案會等待它上線；Git 歷史及訪客已下載的複本不會刪除。還原排除後，worker 會重新發布本機保留的原圖。

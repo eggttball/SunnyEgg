@@ -91,7 +91,9 @@ export async function finalizeDeployment(repository, snapshot) {
 }
 
 export class GitMediaBucket {
-  constructor(root, { git = execute } = {}) { this.root = resolve(root); this.git = git; this.deferDeletion = true; }
+  constructor(root, { git = execute, dispatch = execute } = {}) {
+    this.root = resolve(root); this.git = git; this.dispatch = dispatch; this.deferDeletion = true;
+  }
   setRepository(repository) { this.repository = repository; }
   async check() { await this.repository?.assertOwnership(); this.signal?.throwIfAborted(); }
   async acquireLock() {
@@ -151,7 +153,9 @@ export class GitMediaBucket {
   async commit(repository) {
     this.setRepository(repository);
     await this.check();
-    const photos = (await repository.listPhotos()).filter(row => !row.userExcluded && ['published', 'staged'].includes(row.status)).map(row => ({
+    const records = (await repository.listPhotos()).filter(row => !row.userExcluded);
+    const retryDeployment = records.some(row => row.status === 'staged');
+    const photos = records.filter(row => ['published', 'staged'].includes(row.status)).map(row => ({
       key: row.key, ...(row.status === 'staged' ? { ...row.pendingPayload, reservation: { token: row.publicationToken, revision: row.revision } } : payload(row)),
     }));
     const keep = new Set(photos.map(row => row.objectPath));
@@ -175,5 +179,13 @@ export class GitMediaBucket {
     if (staged) await this.command(['commit', '-m', 'Sync selected SunnyEgg photos']);
     // Retry previously committed but unpushed media after a connection failure.
     await this.command(['push', 'origin', 'main']);
+    if (!staged && retryDeployment) {
+      try {
+        await this.dispatch('gh', ['workflow', 'run', 'notify-sunnyegg.yml', '--repo', MEDIA_REPOSITORY, '--ref', 'main'],
+          { maxBuffer: 1024 * 1024 });
+      } catch {
+        throw new Error('SunnyEgg deployment workflow could not be dispatched');
+      }
+    }
   }
 }
