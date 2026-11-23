@@ -303,22 +303,24 @@ test('legacy post links use the current Facebook permalink format', async () => 
     'https://www.facebook.com/permalink.php?story_fbid=1613495637459193&id=100063963161862');
 });
 
-test('landscape photos reserve room for the original-photo icon', async () => {
+test('original-photo icons stay attached to portrait and landscape photo stages', async () => {
   const portrait = photoPost(['candidate'], { id: 'portrait' });
   const landscape = photoPost(['candidate'], { id: 'landscape' });
+  portrait.assets[0].sourcePhotoId = '100';
+  landscape.assets[0].sourcePhotoId = '200';
   const { content } = await runApp([portrait, landscape]);
   const images = content.querySelectorAll('img');
   const stages = content.querySelectorAll('.media-image-stage');
 
   images[0].naturalWidth = 720;
   images[0].naturalHeight = 960;
-  images[0].dispatch('load');
   images[1].naturalWidth = 960;
   images[1].naturalHeight = 720;
-  images[1].dispatch('load');
 
-  assert.doesNotMatch(stages[0].className, /landscape-photo/);
-  assert.match(stages[1].className, /landscape-photo/);
+  assert.equal(stages.length, 2);
+  assert.equal(stages[0].querySelectorAll('.photo-source-icon').length, 1);
+  assert.equal(stages[1].querySelectorAll('.photo-source-icon').length, 1);
+  assert.ok(stages.every(stage => !stage.className.includes('landscape-photo')));
 });
 
 test('each post date has a link back to the page top', async () => {

@@ -458,9 +458,6 @@ function mediaCard(postId, asset, result, photoIndex, photoId=null, slideshowIte
   imageButton.append(image);
   const imageStage = element("div", "media-image-stage");
   imageStage.append(imageButton);
-  image.addEventListener("load", () => {
-    imageStage.classList.toggle("landscape-photo", image.naturalWidth >= image.naturalHeight);
-  });
   const candidatePhotoId = result?.state === "candidate" && typeof photoId === "string" && /^\d+$/.test(photoId)
     ? photoId : null;
   const caption = element("figcaption", "media-caption");
